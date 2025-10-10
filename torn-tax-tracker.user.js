@@ -253,6 +253,31 @@
         z-index: 2;
       }
 
+      .tax-total-cell {
+        font-weight: 600;
+        white-space: nowrap;
+      }
+
+      .tax-total-paid {
+        font-weight: 600;
+        color: #cbd5f5;
+        white-space: nowrap;
+      }
+
+      .tax-table tfoot {
+        background: rgba(30, 41, 59, 0.82);
+      }
+
+      .tax-table__footer {
+        padding: 10px 12px;
+        font-size: 12px;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: #e2e8f0;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        text-align: center;
+      }
+
       .tax-week {
         font-weight: 600;
         letter-spacing: 0.05em;
@@ -353,6 +378,7 @@
         left: 50%;
         transform: translate(-50%, -50%);
         width: min(520px, 92vw);
+        max-height: 84vh;
         background: linear-gradient(160deg, rgba(15, 23, 42, 0.92), rgba(10, 12, 22, 0.96));
         color: #f8fafc;
         padding: 24px;
@@ -362,6 +388,9 @@
         border: 1px solid rgba(255, 255, 255, 0.06);
         backdrop-filter: blur(18px);
         animation: tax-modal-fade 0.18s ease;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
       }
 
       .tax-modal--wide {
@@ -369,8 +398,29 @@
       }
 
       .tax-modal--tall {
-        max-height: 78vh;
+        min-height: 320px;
+      }
+
+      .tax-modal__body {
+        flex: 1 1 auto;
         overflow: auto;
+        margin-bottom: 18px;
+        padding-right: 6px;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+
+      .tax-modal__body--flush {
+        margin-bottom: 0;
+        padding-right: 0;
+        gap: 12px;
+      }
+
+      .tax-modal__table-wrapper {
+        flex: 1 1 auto;
+        overflow: auto;
+        border-radius: 12px;
       }
 
       .tax-modal h3 {
@@ -467,6 +517,12 @@
 
       .tax-requirements-table tbody tr:nth-child(even) {
         background: rgba(30, 41, 59, 0.55);
+      }
+
+      .tax-requirements-table td:first-child {
+        color: #ffffff;
+        font-weight: 600;
+        white-space: nowrap;
       }
 
       .tax-modal .tax-select,
@@ -581,11 +637,13 @@
     const editor = document.createElement("div");
     editor.className = "tax-modal";
     editor.innerHTML = `
-      <h3>Enter Torn API Key</h3>
-      <label class="tax-field">
-        <span>Your API Key</span>
-        <input id="apiInput" type="text" class="tax-input" value="${SETTINGS.apiKey}">
-      </label>
+      <div class="tax-modal__body">
+        <h3>Enter Torn API Key</h3>
+        <label class="tax-field">
+          <span>Your API Key</span>
+          <input id="apiInput" type="text" class="tax-input" value="${SETTINGS.apiKey}">
+        </label>
+      </div>
       <div class="tax-modal__footer">
         <button id="saveApi" class="tax-button tax-button--primary">Save</button>
       </div>
@@ -606,46 +664,48 @@
     e.className = "tax-modal";
 
     e.innerHTML = `
-      <h3>Settings</h3>
-      <div class="tax-field">
-        <label for="setYear">Start Year</label>
-        <input id="setYear" type="number" class="tax-input" value="${SETTINGS.startYear}">
-      </div>
-      <div class="tax-field">
-        <label for="setWeek">Start Week</label>
-        <input id="setWeek" type="number" class="tax-input" value="${SETTINGS.startWeek}">
-      </div>
-      <div class="tax-field">
-        <label for="setMaxWeeks">Max Weeks to Display</label>
-        <input id="setMaxWeeks" type="number" class="tax-input" value="${SETTINGS.maxWeeks}">
-      </div>
-      <label class="tax-field">
-        <span><input id="manualMode" type="checkbox" ${SETTINGS.manualMode ? "checked" : ""}> Manual Employees Mode</span>
-      </label>
-      <label class="tax-field">
-        <span><input id="testMode" type="checkbox" ${SETTINGS.testMode ? "checked" : ""}> Enable Test Mode (fake data)</span>
-      </label>
+      <div class="tax-modal__body">
+        <h3>Settings</h3>
+        <div class="tax-field">
+          <label for="setYear">Start Year</label>
+          <input id="setYear" type="number" class="tax-input" value="${SETTINGS.startYear}">
+        </div>
+        <div class="tax-field">
+          <label for="setWeek">Start Week</label>
+          <input id="setWeek" type="number" class="tax-input" value="${SETTINGS.startWeek}">
+        </div>
+        <div class="tax-field">
+          <label for="setMaxWeeks">Max Weeks to Display</label>
+          <input id="setMaxWeeks" type="number" class="tax-input" value="${SETTINGS.maxWeeks}">
+        </div>
+        <label class="tax-field">
+          <span><input id="manualMode" type="checkbox" ${SETTINGS.manualMode ? "checked" : ""}> Manual Employees Mode</span>
+        </label>
+        <label class="tax-field">
+          <span><input id="testMode" type="checkbox" ${SETTINGS.testMode ? "checked" : ""}> Enable Test Mode (fake data)</span>
+        </label>
 
-      <fieldset style="border:1px solid rgba(148, 163, 184, 0.25);padding:12px;border-radius:12px;margin-top:14px;">
-        <legend style="padding:0 6px;color:#cbd5f5;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;">Defaults for New Members</legend>
-        <div class="tax-field">
-          <label for="setDefaultMoney">Default Money Tax</label>
-          <input id="setDefaultMoney" class="tax-input" type="number" value="${SETTINGS.defaultMoneyTax}">
-        </div>
-        <div class="tax-field">
-          <label for="setItemName">Default Item (name)</label>
-          <input id="setItemName" class="tax-input" type="text" value="${SETTINGS.taxItemName}">
-        </div>
-        <div class="tax-field">
-          <label for="setDefaultItem">Default Item Tax (qty)</label>
-          <input id="setDefaultItem" class="tax-input" type="number" value="${SETTINGS.defaultItemTax}">
-        </div>
-      </fieldset>
+        <fieldset style="border:1px solid rgba(148, 163, 184, 0.25);padding:12px;border-radius:12px;margin-top:14px;">
+          <legend style="padding:0 6px;color:#cbd5f5;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;">Defaults for New Members</legend>
+          <div class="tax-field">
+            <label for="setDefaultMoney">Default Money Tax</label>
+            <input id="setDefaultMoney" class="tax-input" type="number" value="${SETTINGS.defaultMoneyTax}">
+          </div>
+          <div class="tax-field">
+            <label for="setItemName">Default Item (name)</label>
+            <input id="setItemName" class="tax-input" type="text" value="${SETTINGS.taxItemName}">
+          </div>
+          <div class="tax-field">
+            <label for="setDefaultItem">Default Item Tax (qty)</label>
+            <input id="setDefaultItem" class="tax-input" type="number" value="${SETTINGS.defaultItemTax}">
+          </div>
+        </fieldset>
 
-      <label class="tax-field">Reminder Message
-        <textarea id="setReminder" class="tax-textarea">${SETTINGS.reminderMessage}</textarea>
-        <small>Use placeholders: {name}, {id}, {amount}</small>
-      </label>
+        <label class="tax-field">Reminder Message
+          <textarea id="setReminder" class="tax-textarea">${SETTINGS.reminderMessage}</textarea>
+          <small>Use placeholders: {name}, {id}, {amount}</small>
+        </label>
+      </div>
 
       <div class="tax-modal__footer">
         <button id="saveSet" class="tax-button tax-button--primary">Save</button>
@@ -683,9 +743,11 @@
     });
 
     editor.innerHTML = `
-      <h3>Manual Employees (id:name:type:amount)</h3>
-      <textarea id="empInput" class="tax-textarea" style="height:240px;">${text.trim()}</textarea>
-      <small>Example: 12345:Alice:money:10000000 OR 67890:Bob:xanax:7</small>
+      <div class="tax-modal__body">
+        <h3>Manual Employees (id:name:type:amount)</h3>
+        <textarea id="empInput" class="tax-textarea" style="height:240px;">${text.trim()}</textarea>
+        <small>Example: 12345:Alice:money:10000000 OR 67890:Bob:xanax:7</small>
+      </div>
       <div class="tax-modal__footer">
         <button id="saveEmp" class="tax-button tax-button--primary">Save</button>
         <button id="cancelEmp" class="tax-button tax-button--ghost">Cancel</button>
@@ -740,19 +802,23 @@
       <div id="req-drag-bar" class="tax-panel__header" style="border-radius:14px 14px 0 0; cursor:move; margin:-24px -24px 18px;">
         <span class="tax-panel__title" style="font-size:16px;">Member Requirements</span>
       </div>
-      <div style="margin-bottom:12px;color:#cbd5f5;">Item name shown as "${SETTINGS.taxItemName}" (change in Settings)</div>
-      <table class="tax-requirements-table">
-        <thead>
-          <tr>
-            <th>Member</th>
-            <th>Type</th>
-            <th>Amount</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${rows || "<tr><td colspan='3' style='padding:12px;color:#cbd5f5;'>No employees loaded yet.</td></tr>"}
-        </tbody>
-      </table>
+      <div class="tax-modal__body tax-modal__body--flush">
+        <div style="color:#cbd5f5;">Item name shown as "${SETTINGS.taxItemName}" (change in Settings)</div>
+        <div class="tax-modal__table-wrapper">
+          <table class="tax-requirements-table">
+            <thead>
+              <tr>
+                <th>Member</th>
+                <th>Type</th>
+                <th>Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows || "<tr><td colspan='3' style='padding:12px;color:#cbd5f5;'>No employees loaded yet.</td></tr>"}
+            </tbody>
+          </table>
+        </div>
+      </div>
       <div class="tax-modal__footer">
         <button id="saveReqs" class="tax-button tax-button--primary">Save</button>
         <button id="cancelReqs" class="tax-button tax-button--ghost">Cancel</button>
@@ -891,9 +957,14 @@
     displayWeeks.forEach(week => {
       html += `<th class=\"tax-table__header\">${week}</th>`;
     });
+    html += `<th class=\"tax-table__header\">Total Paid</th>`;
     html += `<th class=\"tax-table__header tax-table__cell--sticky-right\">Balance</th></tr></thead><tbody>`;
 
     const owingList = [];
+    const totals = {
+      money: { paid: 0, balance: 0 },
+      items: { paid: 0, balance: 0 }
+    };
 
     Object.keys(COMPANY_MEMBERS).forEach((id, idx) => {
       const req = SETTINGS.memberRequirements[id] || { type: "money", amount: SETTINGS.defaultMoneyTax };
@@ -914,6 +985,12 @@
 
       const expected = displayWeeks.length * req.amount;
       const balance = totalPaid - expected;
+      const roundedPaid = Math.max(0, Math.round(totalPaid));
+      const totalPaidDisplay = req.type === "money"
+        ? `$${roundedPaid.toLocaleString()}`
+        : `${roundedPaid.toLocaleString()} ${SETTINGS.taxItemName}`;
+
+      html += `<td class=\"tax-table__cell tax-total-paid\">${totalPaidDisplay}</td>`;
 
       if (balance < 0) {
         html += `<td class=\"tax-table__cell tax-table__cell--sticky-right tax-balance tax-balance--owing\">Owes ${req.type === "money" ? "$" + Math.abs(balance).toLocaleString() : Math.abs(balance) + " " + SETTINGS.taxItemName}</td>`;
@@ -924,10 +1001,35 @@
         html += `<td class=\"tax-table__cell tax-table__cell--sticky-right tax-balance tax-balance--ontime\">On Track</td>`;
       }
 
+      if (req.type === "money") {
+        totals.money.paid += Math.round(totalPaid);
+        totals.money.balance += balance;
+      } else {
+        totals.items.paid += Math.round(totalPaid);
+        totals.items.balance += balance;
+      }
+
       html += `</tr>`;
     });
 
-    html += `</tbody></table></div>`;
+    const paidSummary = `Money: $${Math.max(0, Math.round(totals.money.paid)).toLocaleString()} • ${SETTINGS.taxItemName}: ${Math.max(0, Math.round(totals.items.paid)).toLocaleString()}`;
+    const balanceSummaryParts = [];
+    const moneyBalanceRounded = Math.round(totals.money.balance);
+    const itemsBalanceRounded = Math.round(totals.items.balance);
+
+    balanceSummaryParts.push(moneyBalanceRounded === 0
+      ? "Money: On Track"
+      : moneyBalanceRounded > 0
+        ? `Money: Overpaid $${moneyBalanceRounded.toLocaleString()}`
+        : `Money: Owes $${Math.abs(moneyBalanceRounded).toLocaleString()}`);
+    balanceSummaryParts.push(itemsBalanceRounded === 0
+      ? `${SETTINGS.taxItemName}: On Track`
+      : itemsBalanceRounded > 0
+        ? `${SETTINGS.taxItemName}: Overpaid ${itemsBalanceRounded.toLocaleString()} ${SETTINGS.taxItemName}`
+        : `${SETTINGS.taxItemName}: Owes ${Math.abs(itemsBalanceRounded).toLocaleString()} ${SETTINGS.taxItemName}`);
+    const balanceSummary = balanceSummaryParts.join(" • ");
+
+    html += `</tbody><tfoot><tr><td class=\"tax-table__footer tax-total-cell\" colspan=\"${displayWeeks.length + 1}\">Totals</td><td class=\"tax-table__footer\">${paidSummary}</td><td class=\"tax-table__footer tax-table__cell--sticky-right\">${balanceSummary}</td></tr></tfoot></table></div>`;
 
     // Reminders box
     let reminderHtml = `<div class=\"tax-reminder-card\">`;
@@ -998,18 +1100,105 @@
 
   function makeDraggable(el, handle) {
     let offsetX = 0, offsetY = 0, isDown = false;
-    handle.addEventListener('mousedown', e => { isDown = true; offsetX = el.offsetLeft - e.clientX; offsetY = el.offsetTop - e.clientY; document.body.style.userSelect = "none"; });
-    document.addEventListener('mouseup', () => { isDown = false; document.body.style.userSelect = ""; });
-    document.addEventListener('mousemove', e => { if (isDown) { el.style.left = (e.clientX + offsetX) + 'px'; el.style.top = (e.clientY + offsetY) + 'px'; } });
+    const dragHandle = handle || el;
+
+    function ensureFreePosition() {
+      const computed = window.getComputedStyle(el);
+      if (computed.transform && computed.transform !== 'none') {
+        const rect = el.getBoundingClientRect();
+        el.style.transform = 'none';
+        el.style.left = `${rect.left}px`;
+        el.style.top = `${rect.top}px`;
+      }
+    }
+
+    dragHandle.addEventListener('mousedown', e => {
+      ensureFreePosition();
+      isDown = true;
+      const rect = el.getBoundingClientRect();
+      offsetX = e.clientX - rect.left;
+      offsetY = e.clientY - rect.top;
+      document.body.style.userSelect = "none";
+    });
+    document.addEventListener('mouseup', () => {
+      isDown = false;
+      document.body.style.userSelect = "";
+    });
+    document.addEventListener('mousemove', e => {
+      if (!isDown) return;
+      const rect = el.getBoundingClientRect();
+      const width = rect.width;
+      const height = rect.height;
+      const newLeft = Math.min(Math.max(e.clientX - offsetX, 10), Math.max(10, window.innerWidth - width - 10));
+      const newTop = Math.min(Math.max(e.clientY - offsetY, 10), Math.max(10, window.innerHeight - height - 10));
+      el.style.left = `${newLeft}px`;
+      el.style.top = `${newTop}px`;
+    });
   }
 
   function makeResizable(el) {
     const resizeHandle = document.createElement("div");
     resizeHandle.className = "tax-resize-handle";
     el.appendChild(resizeHandle);
-    resizeHandle.addEventListener("mousedown", e => { e.preventDefault(); document.addEventListener("mousemove", resizePanel); document.addEventListener("mouseup", stopResize); });
-    function resizePanel(e) { el.style.width = (e.clientX - el.offsetLeft) + "px"; el.style.height = (e.clientY - el.offsetTop) + "px"; }
-    function stopResize() { document.removeEventListener("mousemove", resizePanel); document.removeEventListener("mouseup", stopResize); }
+
+    let startX = 0;
+    let startY = 0;
+    let startWidth = 0;
+    let startHeight = 0;
+    let maxWidth = 0;
+    let maxHeight = 0;
+    let minWidth = 0;
+    let minHeight = 0;
+
+    function ensureFreePosition() {
+      const computed = window.getComputedStyle(el);
+      if (computed.transform && computed.transform !== 'none') {
+        const rect = el.getBoundingClientRect();
+        el.style.transform = 'none';
+        el.style.left = `${rect.left}px`;
+        el.style.top = `${rect.top}px`;
+      }
+    }
+
+    function parseSize(value, fallback) {
+      const parsed = parseInt(value, 10);
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+    }
+
+    function onMouseDown(e) {
+      e.preventDefault();
+      ensureFreePosition();
+      const rect = el.getBoundingClientRect();
+      startX = e.clientX;
+      startY = e.clientY;
+      startWidth = rect.width;
+      startHeight = rect.height;
+      const style = window.getComputedStyle(el);
+      minWidth = parseSize(style.minWidth, 320);
+      minHeight = parseSize(style.minHeight, 240);
+      maxWidth = Math.max(minWidth, window.innerWidth - rect.left - 16);
+      maxHeight = Math.max(minHeight, window.innerHeight - rect.top - 16);
+      document.addEventListener("mousemove", onMouseMove);
+      document.addEventListener("mouseup", onMouseUp);
+      document.body.style.userSelect = "none";
+    }
+
+    function onMouseMove(e) {
+      const deltaX = e.clientX - startX;
+      const deltaY = e.clientY - startY;
+      const newWidth = Math.min(Math.max(startWidth + deltaX, minWidth), maxWidth);
+      const newHeight = Math.min(Math.max(startHeight + deltaY, minHeight), maxHeight);
+      el.style.width = `${newWidth}px`;
+      el.style.height = `${newHeight}px`;
+    }
+
+    function onMouseUp() {
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+      document.body.style.userSelect = "";
+    }
+
+    resizeHandle.addEventListener("mousedown", onMouseDown);
   }
 
   function makeFakeData() {
