@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker (Money + Xanax Support)
 // @namespace    https://github.com/ShiftyFurball/Torncity-userscripts
-// @version      4.1
+// @version      4.2
 // @description  Track weekly company tax (money or items like Xanax) from employees in Torn. Per-member tax type, draggable panel, reminders with custom messages.
 // @author       Hooded_Prince (or you)
 // @match        https://www.torn.com/*
