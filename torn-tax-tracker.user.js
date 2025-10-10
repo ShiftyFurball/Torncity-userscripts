@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      5.2
+// @version      5.3
 // @description  Track weekly company tax from employees in Torn with Torn-styled table, draggable/resizable panel, reminders, overpayment tracking, totals row, and Test Mode.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -28,6 +28,7 @@
     memberRequirements: {},
     defaultMoneyTax: 10000000,
     defaultItemTax: 7,
+    defaultRequirementType: "money",
     taxItemName: "Xanax",
     reminderMessage: "Hi {name}, you currently owe {amount}. Please pay as soon as possible. Thanks!",
     enableEmployeeMenu: false,
@@ -64,14 +65,26 @@
   if (!SETTINGS.defaultItemTax) {
     SETTINGS.defaultItemTax = DEFAULT_SETTINGS.defaultItemTax;
   }
+  if (SETTINGS.defaultRequirementType !== "item" && SETTINGS.defaultRequirementType !== "money") {
+    SETTINGS.defaultRequirementType = DEFAULT_SETTINGS.defaultRequirementType;
+  }
 
   let lastEmployeesCache = {};
   let lastWeeklyDataCache = {};
 
+  function getDefaultRequirement() {
+    const type = SETTINGS.defaultRequirementType === 'item' ? 'item' : 'money';
+    const amount = type === 'item' ? SETTINGS.defaultItemTax : SETTINGS.defaultMoneyTax;
+    return { type, amount, isDefault: true };
+  }
+
   function getMemberRequirement(id) {
+    if (!SETTINGS.enableEmployeeMenu) {
+      return getDefaultRequirement();
+    }
     const req = SETTINGS.memberRequirements[id];
     if (!req || req.useDefault) {
-      return { type: 'money', amount: SETTINGS.defaultMoneyTax, isDefault: true };
+      return getDefaultRequirement();
     }
     const type = req.type === 'item' ? 'item' : 'money';
     const fallback = type === 'item' ? SETTINGS.defaultItemTax : SETTINGS.defaultMoneyTax;
@@ -233,6 +246,12 @@
 
       <fieldset style="border:1px solid #444;border-radius:6px;padding:10px;margin-top:12px;">
         <legend style="padding:0 6px;color:#0f0;">Defaults for New Employees</legend>
+        <label>Default Requirement Type:
+          <select id="setDefaultRequirementType" style="width:160px;background:#111;color:#0f0;border:1px solid #555;margin-left:8px;">
+            <option value="money" ${SETTINGS.defaultRequirementType === "item" ? "" : "selected"}>Money</option>
+            <option value="item" ${SETTINGS.defaultRequirementType === "item" ? "selected" : ""}>${SETTINGS.taxItemName}</option>
+          </select>
+        </label><br><br>
         <label>Default Money Tax:
           <input id="setDefaultMoney" type="number" value="${SETTINGS.defaultMoneyTax}" style="width:140px;background:#111;color:#0f0;border:1px solid #555;margin-left:8px;">
         </label><br><br>
@@ -255,6 +274,19 @@
       </div>
     `;
     document.body.appendChild(editor);
+    const defaultTypeSelect = editor.querySelector("#setDefaultRequirementType");
+    const itemNameInput = editor.querySelector("#setItemName");
+    if (defaultTypeSelect && itemNameInput) {
+      const updateItemLabel = () => {
+        const option = defaultTypeSelect.querySelector('option[value="item"]');
+        if (option) {
+          const name = itemNameInput.value.trim() || DEFAULT_SETTINGS.taxItemName;
+          option.textContent = name;
+        }
+      };
+      updateItemLabel();
+      itemNameInput.addEventListener("input", updateItemLabel);
+    }
     editor.querySelector("#cancelSet").addEventListener("click", () => editor.remove());
     editor.querySelector("#saveSet").addEventListener("click", () => {
       SETTINGS.startYear = parseInt(editor.querySelector("#setYear").value, 10);
@@ -263,11 +295,21 @@
       SETTINGS.manualMode = editor.querySelector("#manualMode").checked;
       SETTINGS.testMode = editor.querySelector("#testMode").checked;
       SETTINGS.enableEmployeeMenu = editor.querySelector("#enableEmployeeMenu").checked;
+      const typeSelect = editor.querySelector("#setDefaultRequirementType");
+      SETTINGS.defaultRequirementType = typeSelect && typeSelect.value === "item" ? "item" : "money";
       SETTINGS.defaultMoneyTax = parseInt(editor.querySelector("#setDefaultMoney").value, 10) || DEFAULT_SETTINGS.defaultMoneyTax;
       SETTINGS.taxItemName = (editor.querySelector("#setItemName").value || DEFAULT_SETTINGS.taxItemName).trim();
       SETTINGS.defaultItemTax = parseInt(editor.querySelector("#setDefaultItem").value, 10) || DEFAULT_SETTINGS.defaultItemTax;
       SETTINGS.reminderMessage = editor.querySelector("#setReminder").value.trim() || DEFAULT_SETTINGS.reminderMessage;
       SETTINGS.requiredTax = SETTINGS.defaultMoneyTax;
+      const defaults = getDefaultRequirement();
+      Object.keys(SETTINGS.memberRequirements).forEach(id => {
+        const req = SETTINGS.memberRequirements[id];
+        if (req && req.useDefault) {
+          req.type = defaults.type;
+          req.amount = defaults.amount;
+        }
+      });
       saveSettings(SETTINGS);
       editor.remove();
       panel.querySelector("#editEmployees").style.display = SETTINGS.manualMode ? "inline-block" : "none";
@@ -362,9 +404,15 @@
         }
       });
 
+      const defaults = getDefaultRequirement();
       Object.keys(employees).forEach(id => {
         if (!SETTINGS.memberRequirements[id]) {
-          SETTINGS.memberRequirements[id] = { type: "money", amount: SETTINGS.defaultMoneyTax, useDefault: true };
+          SETTINGS.memberRequirements[id] = { type: defaults.type, amount: defaults.amount, useDefault: true };
+          return;
+        }
+        if (SETTINGS.memberRequirements[id].useDefault) {
+          SETTINGS.memberRequirements[id].type = defaults.type;
+          SETTINGS.memberRequirements[id].amount = defaults.amount;
         }
       });
 
@@ -708,14 +756,15 @@
             }
           }
         } else {
+          const defaults = getDefaultRequirement();
           if (typeSelect) {
             typeSelect.dataset.lastValue = typeSelect.value;
-            typeSelect.value = 'money';
+            typeSelect.value = defaults.type;
             typeSelect.disabled = true;
           }
           if (amountInput) {
             amountInput.dataset.lastValue = amountInput.value;
-            amountInput.value = SETTINGS.defaultMoneyTax;
+            amountInput.value = defaults.amount;
             amountInput.disabled = true;
           }
         }
@@ -731,7 +780,8 @@
         toggles.forEach(box => {
           const id = box.getAttribute('data-id');
           if (!box.checked) {
-            SETTINGS.memberRequirements[id] = { type: 'money', amount: SETTINGS.defaultMoneyTax, useDefault: true };
+            const defaults = getDefaultRequirement();
+            SETTINGS.memberRequirements[id] = { type: defaults.type, amount: defaults.amount, useDefault: true };
             return;
           }
           const select = Array.from(types).find(sel => sel.getAttribute('data-id') === id);
