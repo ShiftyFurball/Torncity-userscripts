@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker (Money + Xanax Support)
 // @namespace    https://github.com/ShiftyFurball/Torncity-userscripts
-// @version      4.5
+// @version      4.6
 // @description  Track weekly company tax (money or items like Xanax) from employees in Torn. Per-member tax type, draggable panel, reminders with custom messages.
 // @author       Hooded_Prince (or you)
 // @match        https://www.torn.com/*
@@ -20,6 +20,9 @@
   'use strict';
 
   const STORAGE_KEY_SETTINGS = "torn_tax_settings_v41";
+  const REMINDER_MESSAGE_KEY = "torn_tax_pending_message";
+  const REMINDER_TARGET_KEY = "torn_tax_pending_target";
+  const REMINDER_TARGET_NAME_KEY = "torn_tax_pending_name";
 
   const existingStyle = document.getElementById("torn-tax-style");
   if (!existingStyle) {
@@ -378,7 +381,9 @@
         left: 50%;
         transform: translate(-50%, -50%);
         width: min(520px, 92vw);
-        max-height: 84vh;
+        max-width: calc(100vw - 40px);
+        max-height: calc(100vh - 40px);
+        min-height: 320px;
         background: linear-gradient(160deg, rgba(15, 23, 42, 0.92), rgba(10, 12, 22, 0.96));
         color: #f8fafc;
         padding: 24px;
@@ -401,6 +406,21 @@
         min-height: 320px;
       }
 
+      .tax-modal--settings {
+        width: min(700px, 94vw);
+        height: min(620px, 92vh);
+      }
+
+      .tax-modal--requirements {
+        width: min(940px, 96vw);
+        height: min(680px, 92vh);
+      }
+
+      .tax-modal__header {
+        border-radius: 14px 14px 0 0;
+        margin: -24px -24px 18px;
+      }
+
       .tax-modal__body {
         flex: 1 1 auto;
         overflow: auto;
@@ -409,18 +429,22 @@
         display: flex;
         flex-direction: column;
         gap: 14px;
+        min-height: 0;
       }
 
       .tax-modal__body--flush {
         margin-bottom: 0;
         padding-right: 0;
         gap: 12px;
+        overflow: hidden;
       }
 
       .tax-modal__table-wrapper {
         flex: 1 1 auto;
         overflow: auto;
         border-radius: 12px;
+        min-height: 0;
+        max-height: 100%;
       }
 
       .tax-modal h3 {
@@ -483,6 +507,28 @@
       .tax-modal textarea {
         min-height: 90px;
         resize: vertical;
+      }
+
+      .tax-toast {
+        position: fixed;
+        bottom: 32px;
+        right: 32px;
+        padding: 12px 16px;
+        border-radius: 12px;
+        background: rgba(15, 23, 42, 0.92);
+        color: #f8fafc;
+        box-shadow: 0 18px 40px rgba(15, 23, 42, 0.45);
+        border: 1px solid rgba(148, 163, 184, 0.25);
+        opacity: 0;
+        transform: translateY(20px);
+        transition: opacity 0.2s ease, transform 0.2s ease;
+        z-index: 12000;
+        pointer-events: none;
+      }
+
+      .tax-toast.is-visible {
+        opacity: 1;
+        transform: translateY(0);
       }
 
       .tax-requirements-table {
@@ -558,6 +604,8 @@
     `;
     document.head.appendChild(style);
   }
+
+  autoFillReminderMessage();
 
   const DEFAULT_SETTINGS = {
     startYear: new Date().getUTCFullYear(),
@@ -661,11 +709,13 @@
   // --- UI: Settings
   function showSettingsEditor() {
     const e = document.createElement("div");
-    e.className = "tax-modal";
+    e.className = "tax-modal tax-modal--settings";
 
     e.innerHTML = `
+      <div id="settings-drag-bar" class="tax-panel__header tax-modal__header">
+        <span class="tax-panel__title">Settings</span>
+      </div>
       <div class="tax-modal__body">
-        <h3>Settings</h3>
         <div class="tax-field">
           <label for="setYear">Start Year</label>
           <input id="setYear" type="number" class="tax-input" value="${SETTINGS.startYear}">
@@ -713,6 +763,9 @@
       </div>
     `;
     document.body.appendChild(e);
+    setInitialModalSize(e, 700, 600);
+    makeDraggable(e, e.querySelector("#settings-drag-bar"));
+    makeResizable(e);
     e.querySelector("#cancelSet").addEventListener("click", () => e.remove());
     e.querySelector("#saveSet").addEventListener("click", () => {
       SETTINGS.startYear = parseInt(e.querySelector("#setYear").value, 10);
@@ -778,7 +831,7 @@
   // --- UI: Requirements editor (works in API or Manual mode)
   function showRequirementsEditor(currentEmployees = lastEmployeesCache) {
     const editor = document.createElement("div");
-    editor.className = "tax-modal tax-modal--wide tax-modal--tall";
+    editor.className = "tax-modal tax-modal--wide tax-modal--tall tax-modal--requirements";
 
     const rows = Object.keys(currentEmployees || {}).sort((a,b)=>currentEmployees[a].localeCompare(currentEmployees[b]))
       .map(id => {
@@ -799,7 +852,7 @@
       }).join("");
 
     editor.innerHTML = `
-      <div id="req-drag-bar" class="tax-panel__header" style="border-radius:14px 14px 0 0; cursor:move; margin:-24px -24px 18px;">
+      <div id="req-drag-bar" class="tax-panel__header tax-modal__header" style="cursor:move;">
         <span class="tax-panel__title" style="font-size:16px;">Member Requirements</span>
       </div>
       <div class="tax-modal__body tax-modal__body--flush">
@@ -825,6 +878,7 @@
       </div>
     `;
     document.body.appendChild(editor);
+    setInitialModalSize(editor, 900, 640);
 
     const dragHandle = editor.querySelector("#req-drag-bar");
     if (dragHandle) {
@@ -1045,7 +1099,7 @@
           .replace(/{amount}/g, emp.amount);
         reminderHtml += `<li class=\"tax-reminder-card__item\">
           <span>${emp.name} [${emp.id}] owes ${emp.amount}</span>
-          <a href=\"#\" data-id=\"${emp.id}\" data-msg=\"${encodeURIComponent(msg)}\"
+          <a href=\"#\" data-id=\"${emp.id}\" data-name=\"${encodeURIComponent(emp.name)}\" data-msg=\"${encodeURIComponent(msg)}\"
              class=\"send-reminder tax-reminder-card__link\">Send Reminder</a></li>`;
       });
       reminderHtml += `</ul>`;
@@ -1056,14 +1110,36 @@
 
     // Clipboard reminder handlers
     container.querySelectorAll(".send-reminder").forEach(link => {
-      link.addEventListener("click", e => {
+      link.addEventListener("click", async e => {
         e.preventDefault();
         const empId = link.getAttribute("data-id");
+        const empName = decodeURIComponent(link.getAttribute("data-name") || "");
         const msg = decodeURIComponent(link.getAttribute("data-msg"));
-        navigator.clipboard.writeText(msg).then(() => {
-          alert("Reminder message copied to clipboard! Paste it in the compose box (Ctrl+V).");
-          window.open(`https://www.torn.com/messages.php#/p=compose&XID=${empId}`, "_blank");
-        });
+
+        sessionStoreSet(REMINDER_MESSAGE_KEY, msg);
+        sessionStoreSet(REMINDER_TARGET_KEY, empId || "");
+        sessionStoreSet(REMINDER_TARGET_NAME_KEY, empName);
+
+        let copied = false;
+        try {
+          copied = await copyTextToClipboard(msg);
+        } catch (err) {
+          console.warn("Failed to copy reminder message", err);
+        }
+
+        if (copied) {
+          showToast("Reminder copied. Compose window opened in a new tab.");
+        } else {
+          showToast("Compose window opened. Reminder will auto-fill there.");
+        }
+
+        window.open(`https://www.torn.com/messages.php#/p=compose&XID=${empId}&taxReminder=1`, "_blank");
+
+        setTimeout(() => {
+          if (sessionStoreGet(REMINDER_MESSAGE_KEY) === msg) {
+            sessionStoreRemove(REMINDER_MESSAGE_KEY, REMINDER_TARGET_KEY, REMINDER_TARGET_NAME_KEY);
+          }
+        }, 5 * 60 * 1000);
       });
     });
   }
@@ -1199,6 +1275,181 @@
     }
 
     resizeHandle.addEventListener("mousedown", onMouseDown);
+  }
+
+  async function copyTextToClipboard(text) {
+    if (!text) return false;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return true;
+      } catch (err) {
+        console.warn("navigator.clipboard.writeText failed", err);
+      }
+    }
+
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "readonly");
+    textarea.style.position = "fixed";
+    textarea.style.top = "-9999px";
+    textarea.style.left = "-9999px";
+    document.body.appendChild(textarea);
+    textarea.select();
+    textarea.setSelectionRange(0, textarea.value.length);
+    let success = false;
+    try {
+      success = document.execCommand("copy");
+    } catch (err) {
+      success = false;
+      console.warn("document.execCommand copy failed", err);
+    }
+    textarea.remove();
+    return success;
+  }
+
+  function showToast(message, { duration = 2600 } = {}) {
+    if (!message || !document.body) return;
+    document.querySelectorAll(".tax-toast").forEach(el => el.remove());
+    const toast = document.createElement("div");
+    toast.className = "tax-toast";
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    requestAnimationFrame(() => {
+      toast.classList.add("is-visible");
+    });
+    setTimeout(() => {
+      toast.classList.remove("is-visible");
+      setTimeout(() => toast.remove(), 220);
+    }, duration);
+  }
+
+  function setInitialModalSize(modal, preferredWidth, preferredHeight) {
+    if (!modal) return;
+    const availableWidth = Math.max(320, window.innerWidth - 48);
+    const availableHeight = Math.max(320, window.innerHeight - 48);
+    if (preferredWidth) {
+      modal.style.width = `${Math.min(preferredWidth, availableWidth)}px`;
+    }
+    if (preferredHeight) {
+      modal.style.height = `${Math.min(preferredHeight, availableHeight)}px`;
+    }
+  }
+
+  function autoFillReminderMessage() {
+    if (typeof window === "undefined") return;
+    if (!window.location.pathname.endsWith("/messages.php")) return;
+    const hash = window.location.hash || "";
+    if (!hash.includes("p=compose")) return;
+
+    if (!document.body) {
+      document.addEventListener("DOMContentLoaded", autoFillReminderMessage, { once: true });
+      return;
+    }
+
+    const storedMessage = sessionStoreGet(REMINDER_MESSAGE_KEY);
+    if (!storedMessage) return;
+
+    const targetId = sessionStoreGet(REMINDER_TARGET_KEY) || "";
+    const targetName = sessionStoreGet(REMINDER_TARGET_NAME_KEY) || "";
+
+    let observer;
+    let timeoutId;
+
+    const cleanup = () => {
+      if (observer) observer.disconnect();
+      if (timeoutId) clearTimeout(timeoutId);
+      sessionStoreRemove(REMINDER_MESSAGE_KEY, REMINDER_TARGET_KEY, REMINDER_TARGET_NAME_KEY);
+    };
+
+    const applyMessage = () => {
+      const textarea = findComposeTextarea();
+      if (!textarea) return false;
+
+      if (!textarea.value || textarea.value.trim() === "" || textarea.value === storedMessage) {
+        textarea.value = storedMessage;
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+        textarea.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      textarea.focus();
+
+      const descriptor = targetName || (targetId ? `ID ${targetId}` : "");
+      const toastText = descriptor
+        ? `Reminder message ready to send to ${descriptor}.`
+        : "Reminder message ready to send.";
+      showToast(toastText, { duration: 3200 });
+
+      cleanup();
+      return true;
+    };
+
+    if (applyMessage()) {
+      return;
+    }
+
+    observer = new MutationObserver(() => {
+      if (applyMessage()) {
+        observer.disconnect();
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    timeoutId = setTimeout(() => {
+      cleanup();
+    }, 20000);
+  }
+
+  function findComposeTextarea() {
+    const selectors = [
+      ".mail-compose textarea",
+      ".mail-write textarea",
+      "textarea[name=\"compose-message\"]",
+      "textarea[name=\"message\"]",
+      "textarea[name=\"mailbox-message\"]",
+      "textarea#mailContent",
+      "textarea"
+    ];
+
+    for (const selector of selectors) {
+      const el = document.querySelector(selector);
+      if (!el) continue;
+      if (selector === "textarea") {
+        const container = el.closest('[class*="compose" i], [id*="compose" i], [class*="mail" i]');
+        if (!container) continue;
+      }
+      if (el.offsetParent === null) {
+        continue;
+      }
+      return el;
+    }
+    return null;
+  }
+
+  function sessionStoreGet(key) {
+    try {
+      return sessionStorage.getItem(key);
+    } catch (err) {
+      console.warn("Unable to read sessionStorage", err);
+      return null;
+    }
+  }
+
+  function sessionStoreSet(key, value) {
+    try {
+      sessionStorage.setItem(key, value);
+    } catch (err) {
+      console.warn("Unable to write to sessionStorage", err);
+    }
+  }
+
+  function sessionStoreRemove(...keys) {
+    keys.forEach(key => {
+      try {
+        sessionStorage.removeItem(key);
+      } catch (err) {
+        console.warn("Unable to remove sessionStorage key", err);
+      }
+    });
   }
 
   function makeFakeData() {
