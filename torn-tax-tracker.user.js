@@ -49,7 +49,7 @@
         color: #ffffff;
         background: linear-gradient(135deg, #6366f1, #22d3ee);
         box-shadow: 0 12px 24px rgba(34, 211, 238, 0.25);
-        cursor: pointer;
+        cursor: grab;
         transition: transform 0.2s ease, box-shadow 0.2s ease, filter 0.2s ease;
       }
 
@@ -57,6 +57,10 @@
         transform: translateY(-2px) scale(1.02);
         box-shadow: 0 16px 32px rgba(99, 102, 241, 0.35);
         filter: brightness(1.05);
+      }
+
+      .torn-tax-open-button:active {
+        cursor: grabbing;
       }
 
       .torn-tax-panel {
@@ -350,29 +354,51 @@
 
       .tax-reminder-card__item {
         display: flex;
-        flex-wrap: wrap;
-        gap: 6px;
         align-items: center;
+        justify-content: space-between;
+        gap: 14px;
         color: #fecaca;
         background: rgba(239, 68, 68, 0.08);
         border-radius: 10px;
-        padding: 10px 12px;
+        padding: 12px 14px;
         border: 1px solid rgba(239, 68, 68, 0.18);
+        flex-wrap: wrap;
       }
 
-      .tax-reminder-card__link {
-        color: #67e8f9;
+      .tax-reminder-card__details {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        min-width: 0;
+      }
+
+      .tax-reminder-card__name {
         font-weight: 600;
-        text-decoration: none;
-        padding: 4px 8px;
-        border-radius: 8px;
-        background: rgba(14, 165, 233, 0.15);
-        transition: background 0.2s ease, color 0.2s ease;
+        color: #fca5a5;
       }
 
-      .tax-reminder-card__link:hover {
-        background: rgba(14, 165, 233, 0.28);
-        color: #bae6fd;
+      .tax-reminder-card__amount {
+        font-size: 12px;
+        color: #fecaca;
+        opacity: 0.9;
+      }
+
+      .tax-reminder-card__actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .tax-reminder-card__message {
+        font-size: 12px;
+        color: rgba(148, 163, 184, 0.9);
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
       }
 
       .tax-modal {
@@ -407,8 +433,16 @@
       }
 
       .tax-modal--settings {
-        width: min(700px, 94vw);
-        height: min(620px, 92vh);
+        width: min(720px, 94vw);
+        max-width: 720px;
+        height: auto;
+        max-height: calc(100vh - 64px);
+      }
+
+      .tax-modal--settings .tax-modal__body {
+        flex: 0 1 auto;
+        overflow: visible;
+        padding-right: 0;
       }
 
       .tax-modal--requirements {
@@ -461,6 +495,54 @@
         margin-bottom: 14px;
         font-size: 13px;
         color: #cbd5f5;
+      }
+
+      .tax-field--checkbox {
+        flex-direction: row;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 0;
+      }
+
+      .tax-field--checkbox input[type="checkbox"] {
+        width: auto;
+        height: 18px;
+        min-width: 18px;
+        accent-color: #6366f1;
+      }
+
+      .tax-settings-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 14px;
+        margin-bottom: 14px;
+      }
+
+      .tax-settings-grid--compact {
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      }
+
+      .tax-settings-grid .tax-field,
+      .tax-settings-fieldset .tax-field {
+        margin-bottom: 0;
+      }
+
+      .tax-settings-fieldset {
+        border: 1px solid rgba(148, 163, 184, 0.25);
+        padding: 16px;
+        border-radius: 12px;
+        margin: 6px 0 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+
+      .tax-settings-fieldset legend {
+        padding: 0 6px;
+        color: #cbd5f5;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
       }
 
       .tax-input,
@@ -641,8 +723,10 @@
   // Floating open button
   const button = document.createElement("button");
   button.className = "torn-tax-open-button";
+  button.type = "button";
   button.textContent = "Tax";
   document.body.appendChild(button);
+  prepareFloatingButton(button);
 
   // Panel
   const panel = document.createElement("div");
@@ -715,39 +799,45 @@
       <div id="settings-drag-bar" class="tax-panel__header tax-modal__header">
         <span class="tax-panel__title">Settings</span>
       </div>
-      <div class="tax-modal__body">
-        <div class="tax-field">
-          <label for="setYear">Start Year</label>
-          <input id="setYear" type="number" class="tax-input" value="${SETTINGS.startYear}">
+      <div class="tax-modal__body tax-modal__body--settings">
+        <div class="tax-settings-grid">
+          <div class="tax-field">
+            <label for="setYear">Start Year</label>
+            <input id="setYear" type="number" class="tax-input" value="${SETTINGS.startYear}">
+          </div>
+          <div class="tax-field">
+            <label for="setWeek">Start Week</label>
+            <input id="setWeek" type="number" class="tax-input" value="${SETTINGS.startWeek}">
+          </div>
+          <div class="tax-field">
+            <label for="setMaxWeeks">Max Weeks to Display</label>
+            <input id="setMaxWeeks" type="number" class="tax-input" value="${SETTINGS.maxWeeks}">
+          </div>
+          <label class="tax-field tax-field--checkbox" for="manualMode">
+            <input id="manualMode" type="checkbox" ${SETTINGS.manualMode ? "checked" : ""}>
+            <span>Manual Employees Mode</span>
+          </label>
+          <label class="tax-field tax-field--checkbox" for="testMode">
+            <input id="testMode" type="checkbox" ${SETTINGS.testMode ? "checked" : ""}>
+            <span>Enable Test Mode (fake data)</span>
+          </label>
         </div>
-        <div class="tax-field">
-          <label for="setWeek">Start Week</label>
-          <input id="setWeek" type="number" class="tax-input" value="${SETTINGS.startWeek}">
-        </div>
-        <div class="tax-field">
-          <label for="setMaxWeeks">Max Weeks to Display</label>
-          <input id="setMaxWeeks" type="number" class="tax-input" value="${SETTINGS.maxWeeks}">
-        </div>
-        <label class="tax-field">
-          <span><input id="manualMode" type="checkbox" ${SETTINGS.manualMode ? "checked" : ""}> Manual Employees Mode</span>
-        </label>
-        <label class="tax-field">
-          <span><input id="testMode" type="checkbox" ${SETTINGS.testMode ? "checked" : ""}> Enable Test Mode (fake data)</span>
-        </label>
 
-        <fieldset style="border:1px solid rgba(148, 163, 184, 0.25);padding:12px;border-radius:12px;margin-top:14px;">
-          <legend style="padding:0 6px;color:#cbd5f5;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;">Defaults for New Members</legend>
-          <div class="tax-field">
-            <label for="setDefaultMoney">Default Money Tax</label>
-            <input id="setDefaultMoney" class="tax-input" type="number" value="${SETTINGS.defaultMoneyTax}">
-          </div>
-          <div class="tax-field">
-            <label for="setItemName">Default Item (name)</label>
-            <input id="setItemName" class="tax-input" type="text" value="${SETTINGS.taxItemName}">
-          </div>
-          <div class="tax-field">
-            <label for="setDefaultItem">Default Item Tax (qty)</label>
-            <input id="setDefaultItem" class="tax-input" type="number" value="${SETTINGS.defaultItemTax}">
+        <fieldset class="tax-settings-fieldset">
+          <legend>Defaults for New Members</legend>
+          <div class="tax-settings-grid tax-settings-grid--compact">
+            <div class="tax-field">
+              <label for="setDefaultMoney">Default Money Tax</label>
+              <input id="setDefaultMoney" class="tax-input" type="number" value="${SETTINGS.defaultMoneyTax}">
+            </div>
+            <div class="tax-field">
+              <label for="setItemName">Default Item (name)</label>
+              <input id="setItemName" class="tax-input" type="text" value="${SETTINGS.taxItemName}">
+            </div>
+            <div class="tax-field">
+              <label for="setDefaultItem">Default Item Tax (qty)</label>
+              <input id="setDefaultItem" class="tax-input" type="number" value="${SETTINGS.defaultItemTax}">
+            </div>
           </div>
         </fieldset>
 
@@ -763,7 +853,7 @@
       </div>
     `;
     document.body.appendChild(e);
-    setInitialModalSize(e, 700, 600);
+    setInitialModalSize(e, 720, null);
     makeDraggable(e, e.querySelector("#settings-drag-bar"));
     makeResizable(e);
     e.querySelector("#cancelSet").addEventListener("click", () => e.remove());
@@ -1097,10 +1187,19 @@
           .replace(/{name}/g, emp.name)
           .replace(/{id}/g, emp.id)
           .replace(/{amount}/g, emp.amount);
+        const safeName = escapeHtml(emp.name);
+        const safeAmount = escapeHtml(emp.amount);
+        const safePreview = escapeHtml(msg);
         reminderHtml += `<li class=\"tax-reminder-card__item\">
-          <span>${emp.name} [${emp.id}] owes ${emp.amount}</span>
-          <a href=\"#\" data-id=\"${emp.id}\" data-name=\"${encodeURIComponent(emp.name)}\" data-msg=\"${encodeURIComponent(msg)}\"
-             class=\"send-reminder tax-reminder-card__link\">Send Reminder</a></li>`;
+          <div class=\"tax-reminder-card__details\">
+            <span class=\"tax-reminder-card__name\">${safeName} [${emp.id}]</span>
+            <span class=\"tax-reminder-card__amount\">Owes ${safeAmount}</span>
+            <span class=\"tax-reminder-card__message\">${safePreview}</span>
+          </div>
+          <div class=\"tax-reminder-card__actions\">
+            <button type=\"button\" data-id=\"${emp.id}\" data-name=\"${encodeURIComponent(emp.name)}\" data-msg=\"${encodeURIComponent(msg)}\"
+              class=\"send-reminder tax-button tax-button--accent\">Send Reminder</button>
+          </div></li>`;
       });
       reminderHtml += `</ul>`;
     }
@@ -1145,6 +1244,20 @@
   }
 
   // --- Helpers
+
+  function escapeHtml(value) {
+    if (value === null || value === undefined) return "";
+    return String(value).replace(/[&<>"']/g, char => {
+      switch (char) {
+        case "&": return "&amp;";
+        case "<": return "&lt;";
+        case ">": return "&gt;";
+        case '"': return "&quot;";
+        case "'": return "&#39;";
+        default: return char;
+      }
+    });
+  }
 
   function safe(obj, path) {
     return path.split('.').reduce((o, k) => (o && o[k] !== undefined ? o[k] : undefined), obj);
@@ -1210,6 +1323,30 @@
       el.style.left = `${newLeft}px`;
       el.style.top = `${newTop}px`;
     });
+  }
+
+  function clampElementWithinViewport(el) {
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    if (!rect || (rect.width === 0 && rect.height === 0)) return;
+    const width = rect.width;
+    const height = rect.height;
+    const clampedLeft = Math.min(Math.max(rect.left, 10), Math.max(10, window.innerWidth - width - 10));
+    const clampedTop = Math.min(Math.max(rect.top, 10), Math.max(10, window.innerHeight - height - 10));
+    el.style.left = `${clampedLeft}px`;
+    el.style.top = `${clampedTop}px`;
+    const position = window.getComputedStyle(el).position;
+    if (position === "fixed" || position === "absolute") {
+      el.style.right = "auto";
+      el.style.bottom = "auto";
+    }
+  }
+
+  function prepareFloatingButton(btn) {
+    if (!btn) return;
+    clampElementWithinViewport(btn);
+    makeDraggable(btn, btn);
+    window.addEventListener('resize', () => clampElementWithinViewport(btn));
   }
 
   function makeResizable(el) {
