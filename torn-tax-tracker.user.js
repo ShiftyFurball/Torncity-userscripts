@@ -14,17 +14,25 @@
 (function () {
   'use strict';
 
-  const STORAGE_KEY_SETTINGS = "torn_tax_settings_v3";
+  const STORAGE_KEY_SETTINGS = "torn_tax_settings_v4";
 
   const DEFAULT_SETTINGS = {
     startYear: new Date().getUTCFullYear(),
     startWeek: 40,
-    requiredTax: 10000000,
     maxWeeks: 12,
     manualMode: false,
     manualMembers: {},
     apiKey: "",
-    testMode: false
+    testMode: false,
+    // Per-member overrides
+    memberRequirements: {},
+    defaultMoneyTax: 10000000,
+    defaultItemTax: 7,
+    taxItemName: "Xanax",
+    reminderMessage: "Hi {name}, you currently owe {amount}. Please pay as soon as possible. Thanks!",
+    enableEmployeeMenu: false,
+    // Legacy field kept for backwards compatibility with older saves
+    requiredTax: 10000000
   };
 
   function loadSettings() {
@@ -36,6 +44,29 @@
   }
 
   let SETTINGS = loadSettings();
+
+  // Migrate legacy saves that only had a single required tax amount
+  if (SETTINGS.requiredTax && !SETTINGS.defaultMoneyTax) {
+    SETTINGS.defaultMoneyTax = SETTINGS.requiredTax;
+  }
+  if (!SETTINGS.memberRequirements) {
+    SETTINGS.memberRequirements = {};
+  }
+  if (!SETTINGS.reminderMessage) {
+    SETTINGS.reminderMessage = DEFAULT_SETTINGS.reminderMessage;
+  }
+  if (typeof SETTINGS.enableEmployeeMenu !== "boolean") {
+    SETTINGS.enableEmployeeMenu = DEFAULT_SETTINGS.enableEmployeeMenu;
+  }
+  if (!SETTINGS.taxItemName) {
+    SETTINGS.taxItemName = DEFAULT_SETTINGS.taxItemName;
+  }
+  if (!SETTINGS.defaultItemTax) {
+    SETTINGS.defaultItemTax = DEFAULT_SETTINGS.defaultItemTax;
+  }
+
+  let lastEmployeesCache = {};
+  let lastWeeklyDataCache = {};
 
   // Floating open button
   const button = document.createElement("button");
@@ -61,13 +92,52 @@
   panel.innerHTML = `
     <div id="drag-bar" style="cursor:move;background:#2a2a2a;color:#fff;padding:6px 10px;border-bottom:1px solid #444;display:flex;align-items:center;gap:8px;">
       <span style="font-weight:bold;flex:1;">Weekly Tax Tracker</span>
-      <button id="editSettings" style="background:#444;color:white;border:none;padding:4px 8px;cursor:pointer;border-radius:4px;">Settings</button>
-      <button id="editEmployees" style="display:${SETTINGS.manualMode ? "inline-block" : "none"};background:#555;color:white;border:none;padding:4px 8px;cursor:pointer;border-radius:4px;">Edit Employees</button>
-      <button id="close-tax" style="background:#b30000;color:white;border:none;padding:4px 8px;cursor:pointer;border-radius:4px;">X</button>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <button id="openOverview" style="background:#2e8b57;color:white;border:none;padding:4px 8px;cursor:pointer;border-radius:4px;">Overview</button>
+        <button id="openEmployeeMenu" style="display:${SETTINGS.enableEmployeeMenu ? "inline-block" : "none"};background:#444;color:white;border:none;padding:4px 8px;cursor:pointer;border-radius:4px;">Employees</button>
+        <button id="editSettings" style="background:#444;color:white;border:none;padding:4px 8px;cursor:pointer;border-radius:4px;">Settings</button>
+        <button id="editEmployees" style="display:${SETTINGS.manualMode ? "inline-block" : "none"};background:#555;color:white;border:none;padding:4px 8px;cursor:pointer;border-radius:4px;">Edit Employees</button>
+        <button id="close-tax" style="background:#b30000;color:white;border:none;padding:4px 8px;cursor:pointer;border-radius:4px;">X</button>
+      </div>
     </div>
-    <div id="taxTable" style="height:calc(100% - 44px);overflow:auto;padding:10px;"></div>
+    <div id="viewContainer" style="height:calc(100% - 44px);">
+      <div id="overviewView" style="height:100%;overflow:auto;padding:10px;"></div>
+      <div id="employeeView" style="display:none;height:100%;overflow:auto;padding:10px;"></div>
+    </div>
   `;
   document.body.appendChild(panel);
+
+  const overviewView = panel.querySelector("#overviewView");
+  const employeeView = panel.querySelector("#employeeView");
+  const overviewButton = panel.querySelector("#openOverview");
+  const employeeButton = panel.querySelector("#openEmployeeMenu");
+  let currentView = "overview";
+
+  function switchView(view) {
+    if (view === "employees" && !SETTINGS.enableEmployeeMenu) {
+      view = "overview";
+    }
+    currentView = view;
+
+    if (overviewView) {
+      overviewView.style.display = view === "overview" ? "block" : "none";
+    }
+    if (employeeView) {
+      employeeView.style.display = view === "employees" ? "block" : "none";
+      if (view !== "employees") {
+        employeeView.scrollTop = 0;
+      }
+    }
+
+    if (overviewButton) {
+      overviewButton.style.background = view === "overview" ? "#2e8b57" : "#444";
+      overviewButton.style.color = "white";
+    }
+    if (employeeButton) {
+      employeeButton.style.background = view === "employees" ? "#2e8b57" : "#444";
+      employeeButton.style.color = "white";
+    }
+  }
 
   makeDraggable(panel, panel.querySelector("#drag-bar"));
   makeResizable(panel);
@@ -83,6 +153,25 @@
   panel.querySelector("#close-tax").addEventListener("click", () => panel.style.display = "none");
   panel.querySelector("#editEmployees").addEventListener("click", () => showEmployeeEditor());
   panel.querySelector("#editSettings").addEventListener("click", () => showSettingsEditor());
+  overviewButton.addEventListener("click", () => {
+    switchView("overview");
+    if (Object.keys(lastWeeklyDataCache).length === 0) {
+      fetchData();
+    }
+  });
+  if (employeeButton) {
+    employeeButton.addEventListener("click", () => {
+      switchView("employees");
+      if (!SETTINGS.enableEmployeeMenu) return;
+      if (Object.keys(lastEmployeesCache).length === 0) {
+        fetchData();
+      } else {
+        renderEmployeeMenu(lastEmployeesCache);
+      }
+    });
+  }
+
+  switchView("overview");
 
   function showApiPrompt() {
     const editor = document.createElement("div");
@@ -124,14 +213,31 @@
       <label>Start Week:
         <input id="setWeek" type="number" value="${SETTINGS.startWeek}" style="width:90px;background:#111;color:#0f0;border:1px solid #555;margin-left:8px;">
       </label><br><br>
-      <label>Weekly Tax:
-        <input id="setTax" type="number" value="${SETTINGS.requiredTax}" style="width:140px;background:#111;color:#0f0;border:1px solid #555;margin-left:8px;">
-      </label><br><br>
       <label>Max Weeks to Display:
         <input id="setMaxWeeks" type="number" value="${SETTINGS.maxWeeks}" style="width:90px;background:#111;color:#0f0;border:1px solid #555;margin-left:8px;">
       </label><br><br>
       <label><input id="manualMode" type="checkbox" ${SETTINGS.manualMode ? "checked" : ""}> Manual Employees Mode</label><br><br>
-      <label><input id="testMode" type="checkbox" ${SETTINGS.testMode ? "checked" : ""}> Enable Test Mode (fake data)</label>
+      <label><input id="testMode" type="checkbox" ${SETTINGS.testMode ? "checked" : ""}> Enable Test Mode (fake data)</label><br><br>
+      <label><input id="enableEmployeeMenu" type="checkbox" ${SETTINGS.enableEmployeeMenu ? "checked" : ""}> Enable Employees Menu</label>
+
+      <fieldset style="border:1px solid #444;border-radius:6px;padding:10px;margin-top:12px;">
+        <legend style="padding:0 6px;color:#0f0;">Defaults for New Employees</legend>
+        <label>Default Money Tax:
+          <input id="setDefaultMoney" type="number" value="${SETTINGS.defaultMoneyTax}" style="width:140px;background:#111;color:#0f0;border:1px solid #555;margin-left:8px;">
+        </label><br><br>
+        <label>Item Name:
+          <input id="setItemName" type="text" value="${SETTINGS.taxItemName}" style="width:140px;background:#111;color:#0f0;border:1px solid #555;margin-left:8px;">
+        </label><br><br>
+        <label>Default Item Tax:
+          <input id="setDefaultItem" type="number" value="${SETTINGS.defaultItemTax}" style="width:140px;background:#111;color:#0f0;border:1px solid #555;margin-left:8px;">
+        </label>
+      </fieldset>
+
+      <label style="display:block;margin-top:12px;">Reminder Message:
+        <textarea id="setReminder" style="width:100%;height:80px;background:#111;color:#0f0;border:1px solid #555;margin-top:6px;">${SETTINGS.reminderMessage}</textarea>
+        <small style="color:#ccc;">Use placeholders: {name}, {id}, {amount}</small>
+      </label>
+
       <div style="text-align:right;margin-top:12px;">
         <button id="saveSet" style="background:#2e8b57;color:white;padding:6px 12px;border:none;border-radius:4px;cursor:pointer;">Save</button>
         <button id="cancelSet" style="background:#555;color:white;padding:6px 12px;border:none;border-radius:4px;cursor:pointer;">Cancel</button>
@@ -142,13 +248,24 @@
     editor.querySelector("#saveSet").addEventListener("click", () => {
       SETTINGS.startYear = parseInt(editor.querySelector("#setYear").value, 10);
       SETTINGS.startWeek = parseInt(editor.querySelector("#setWeek").value, 10);
-      SETTINGS.requiredTax = parseInt(editor.querySelector("#setTax").value, 10);
       SETTINGS.maxWeeks = parseInt(editor.querySelector("#setMaxWeeks").value, 10);
       SETTINGS.manualMode = editor.querySelector("#manualMode").checked;
       SETTINGS.testMode = editor.querySelector("#testMode").checked;
+      SETTINGS.enableEmployeeMenu = editor.querySelector("#enableEmployeeMenu").checked;
+      SETTINGS.defaultMoneyTax = parseInt(editor.querySelector("#setDefaultMoney").value, 10) || DEFAULT_SETTINGS.defaultMoneyTax;
+      SETTINGS.taxItemName = (editor.querySelector("#setItemName").value || DEFAULT_SETTINGS.taxItemName).trim();
+      SETTINGS.defaultItemTax = parseInt(editor.querySelector("#setDefaultItem").value, 10) || DEFAULT_SETTINGS.defaultItemTax;
+      SETTINGS.reminderMessage = editor.querySelector("#setReminder").value.trim() || DEFAULT_SETTINGS.reminderMessage;
+      SETTINGS.requiredTax = SETTINGS.defaultMoneyTax;
       saveSettings(SETTINGS);
       editor.remove();
       panel.querySelector("#editEmployees").style.display = SETTINGS.manualMode ? "inline-block" : "none";
+      if (employeeButton) {
+        employeeButton.style.display = SETTINGS.enableEmployeeMenu ? "inline-block" : "none";
+      }
+      if (!SETTINGS.enableEmployeeMenu && currentView === "employees") {
+        switchView("overview");
+      }
       fetchData();
     });
   }
@@ -162,11 +279,15 @@
     });
 
     let text = "";
-    Object.keys(SETTINGS.manualMembers).forEach(id => { text += `${id}:${SETTINGS.manualMembers[id]}\n`; });
+    Object.keys(SETTINGS.manualMembers).forEach(id => {
+      const req = SETTINGS.memberRequirements[id] || { type: "money", amount: SETTINGS.defaultMoneyTax };
+      text += `${id}:${SETTINGS.manualMembers[id]}:${req.type}:${req.amount}\n`;
+    });
 
     editor.innerHTML = `
-      <h3 style="margin:0 0 10px 0;">Manual Employees</h3>
+      <h3 style="margin:0 0 10px 0;">Manual Employees (id:name:type:amount)</h3>
       <textarea id="empInput" style="width:100%;height:220px;background:#111;color:#0f0;border:1px solid #555;">${text.trim()}</textarea>
+      <small style="display:block;margin-top:6px;color:#ccc;">Type may be "money" or "item". Amount should match the requirement.</small>
       <div style="text-align:right;margin-top:10px;">
         <button id="saveEmp" style="background:#2e8b57;color:white;padding:6px 12px;border:none;border-radius:4px;cursor:pointer;">Save</button>
         <button id="cancelEmp" style="background:#555;color:white;padding:6px 12px;border:none;border-radius:4px;cursor:pointer;">Cancel</button>
@@ -178,11 +299,26 @@
     editor.querySelector("#saveEmp").addEventListener("click", () => {
       const lines = editor.querySelector("#empInput").value.split("\n");
       const newList = {};
+      const newReqs = {};
       lines.forEach(line => {
-        const [id, name] = line.split(":").map(x => x.trim());
-        if (id && name) newList[id] = name;
+        if (!line.trim()) return;
+        const parts = line.split(":").map(x => x.trim());
+        const [id, name, type, amount] = parts;
+        if (id && name) {
+          newList[id] = name;
+          const normalizedType = (type === "item" ? "item" : "money");
+          const parsedAmount = parseInt(amount || (normalizedType === "money" ? SETTINGS.defaultMoneyTax : SETTINGS.defaultItemTax), 10);
+          newReqs[id] = { type: normalizedType, amount: isNaN(parsedAmount) ? (normalizedType === "money" ? SETTINGS.defaultMoneyTax : SETTINGS.defaultItemTax) : parsedAmount };
+        }
       });
       SETTINGS.manualMembers = newList;
+      // Remove requirements for employees no longer present
+      Object.keys(SETTINGS.memberRequirements).forEach(id => {
+        if (!newList[id]) {
+          delete SETTINGS.memberRequirements[id];
+        }
+      });
+      SETTINGS.memberRequirements = Object.assign({}, SETTINGS.memberRequirements, newReqs);
       saveSettings(SETTINGS);
       editor.remove();
       fetchData();
@@ -209,106 +345,86 @@
         });
       }
 
-      const logRes = await fetch(`https://api.torn.com/user/?selections=log&log=4800,4810&key=${encodeURIComponent(SETTINGS.apiKey)}`);
+      Object.keys(SETTINGS.memberRequirements).forEach(id => {
+        if (!employees[id]) {
+          delete SETTINGS.memberRequirements[id];
+        }
+      });
+
+      Object.keys(employees).forEach(id => {
+        if (!SETTINGS.memberRequirements[id]) {
+          SETTINGS.memberRequirements[id] = { type: "money", amount: SETTINGS.defaultMoneyTax };
+        }
+      });
+
+      const logRes = await fetch(`https://api.torn.com/user/?selections=log&log=4800,4810,4870,4880&key=${encodeURIComponent(SETTINGS.apiKey)}`);
       const logData = await logRes.json();
       const logs = logData.log || {};
 
-      weeklyData = {};
+      const weekMap = generateWeekMapFrom(SETTINGS.startYear, SETTINGS.startWeek);
+      Object.keys(weekMap).forEach(key => {
+        weeklyData[key] = {};
+      });
+
       for (const id in logs) {
         const log = logs[id];
-        if (log.log !== 4810) continue;
         const ts = new Date(log.timestamp * 1000);
         const [year, week] = getWeekNumber(ts);
         if (year < SETTINGS.startYear || (year === SETTINGS.startYear && week < SETTINGS.startWeek)) continue;
         const weekKey = `${year}-W${week}`;
-        const senderId = log.data.sender;
-        if (!employees[senderId]) continue;
-        const amount = log.data.money || 0;
-        if (!weeklyData[weekKey]) weeklyData[weekKey] = {};
-        weeklyData[weekKey][senderId] = (weeklyData[weekKey][senderId] || 0) + amount;
+
+        const candidates = [safe(log, "data.sender"), safe(log, "data.user"), safe(log, "data.initiator")].filter(Boolean);
+        const senderId = candidates.find(val => employees[val]);
+        if (!senderId) continue;
+
+        if (!weeklyData[weekKey]) {
+          weeklyData[weekKey] = {};
+        }
+        if (!weeklyData[weekKey][senderId]) {
+          weeklyData[weekKey][senderId] = { money: 0, items: 0 };
+        }
+
+        if (log.log === 4810) {
+          weeklyData[weekKey][senderId].money += safe(log, "data.money") || 0;
+        } else if (log.log === 4870 || log.log === 4880) {
+          const itemName = SETTINGS.taxItemName;
+          const single = safe(log, "data.item");
+          if (single && single.name === itemName) {
+            weeklyData[weekKey][senderId].items += single.quantity || 0;
+            continue;
+          }
+          const arr = safe(log, "data.items");
+          if (Array.isArray(arr)) {
+            arr.forEach(it => {
+              if (it && it.name === itemName) {
+                weeklyData[weekKey][senderId].items += it.quantity || 0;
+              }
+            });
+            continue;
+          }
+          const nm = safe(log, "data.name");
+          const qty = safe(log, "data.quantity") || safe(log, "data.qty");
+          if (nm === itemName && qty) {
+            weeklyData[weekKey][senderId].items += qty;
+          }
+        }
       }
     }
 
-    buildTable(weeklyData, employees);
+    lastEmployeesCache = employees;
+    lastWeeklyDataCache = weeklyData;
+    saveSettings(SETTINGS);
+
+    renderOverview(weeklyData, employees);
+    if (SETTINGS.enableEmployeeMenu) {
+      renderEmployeeMenu(employees);
+    }
+    if (!SETTINGS.enableEmployeeMenu && currentView === "employees") {
+      switchView("overview");
+    }
   }
 
-  function buildTable(weeklyData, COMPANY_MEMBERS) {
-    const container = document.getElementById("taxTable");
-    const allWeeks = Object.keys(weeklyData).sort();
-    let displayWeeks = allWeeks.slice(-SETTINGS.maxWeeks);
-
-    let grandPaid = 0, grandBalance = 0;
-    let owingList = [];
-
-    let html = `<div style="overflow:auto;"><table style="width:100%; border-collapse: collapse; text-align:center; font-size:12px; background:#1b1b1b; color:#ccc;">`;
-    html += `<thead><tr style="background:#2a2a2a; color:#fff; font-weight:bold;">`;
-    html += `<th style="padding:8px;border:1px solid #444;text-align:left;position:sticky;left:0;background:#2a2a2a;z-index:2;">Employee</th>`;
-    displayWeeks.forEach(week => {
-      html += `<th style="padding:8px;border:1px solid #444;">${week}</th>`;
-    });
-    html += `<th style="padding:8px;border:1px solid #444;position:sticky;right:140px;background:#2a2a2a;z-index:2;">Total Paid</th>`;
-    html += `<th style="padding:8px;border:1px solid #444;position:sticky;right:0;background:#2a2a2a;z-index:2;">Balance</th></tr></thead><tbody>`;
-
-    Object.keys(COMPANY_MEMBERS).forEach((id, idx) => {
-      let totalPaid = 0;
-      allWeeks.forEach(w => { totalPaid += (weeklyData[w] && weeklyData[w][id]) || 0; });
-      let expected = allWeeks.length * SETTINGS.requiredTax;
-      let balance = totalPaid - expected;
-
-      const rowBg = (idx % 2 === 0) ? "#202020" : "#262626";
-      html += `<tr style="background:${rowBg};">`;
-      html += `<td style="padding:6px;border:1px solid #444;text-align:left;color:#fff;position:sticky;left:0;background:${rowBg};">${COMPANY_MEMBERS[id]} [${id}]</td>`;
-      displayWeeks.forEach(week => {
-        const paid = (weeklyData[week] && weeklyData[week][id]) || 0;
-        html += paid < SETTINGS.requiredTax
-          ? `<td style="background:#3a0000;color:#ff6666;border:1px solid #444;">❌</td>`
-          : `<td style="background:#003300;color:#66ff66;border:1px solid #444;">✅</td>`;
-      });
-      html += `<td style="color:#66ff66;padding:6px;border:1px solid #444;position:sticky;right:140px;background:${rowBg};">$${totalPaid.toLocaleString()}</td>`;
-      if (balance < 0) {
-        html += `<td style="color:#ff6666;padding:6px;border:1px solid #444;position:sticky;right:0;background:${rowBg};">$${Math.abs(balance).toLocaleString()} Owed</td>`;
-        owingList.push({ id, name: COMPANY_MEMBERS[id], amount: Math.abs(balance) });
-      } else if (balance > 0) {
-        html += `<td style="color:#66ccff;padding:6px;border:1px solid #444;position:sticky;right:0;background:${rowBg};">+$${balance.toLocaleString()} Overpaid</td>`;
-      } else {
-        html += `<td style="color:#66ff66;padding:6px;border:1px solid #444;position:sticky;right:0;background:${rowBg};">On Track</td>`;
-      }
-      html += "</tr>";
-
-      grandPaid += totalPaid;
-      grandBalance += balance;
-    });
-
-    html += `<tr style="background:#2a2a2a;font-weight:bold;">`;
-    html += `<td style="padding:6px;border:1px solid #444;text-align:right;color:#fff;">TOTAL</td>`;
-    html += `<td colspan="${displayWeeks.length}"></td>`;
-    html += `<td style="color:#66ff66;padding:6px;border:1px solid #444;">$${grandPaid.toLocaleString()}</td>`;
-    if (grandBalance < 0) {
-      html += `<td style="color:#ff6666;padding:6px;border:1px solid #444;">$${Math.abs(grandBalance).toLocaleString()} Owed</td>`;
-    } else if (grandBalance > 0) {
-      html += `<td style="color:#66ccff;padding:6px;border:1px solid #444;">+$${grandBalance.toLocaleString()} Overpaid</td>`;
-    } else {
-      html += `<td style="color:#66ff66;padding:6px;border:1px solid #444;">On Track</td>`;
-    }
-    html += `</tr></tbody></table></div>`;
-
-    // Reminders
-    let reminderHtml = `<div style="margin-top:15px;padding:10px;background:#222;border:1px solid #444;border-radius:6px;">`;
-    reminderHtml += `<h4 style="color:#fff;margin:0 0 10px 0;">Employees Owing Tax</h4>`;
-    if (owingList.length === 0) {
-      reminderHtml += `<p style="color:lightgreen;">All employees are fully paid up ✅</p>`;
-    } else {
-      reminderHtml += `<ul style="list-style:none;padding:0;margin:0;">`;
-      owingList.forEach(emp => {
-        reminderHtml += `<li style="margin:6px 0;color:#ff6666;">${emp.name} [${emp.id}] owes $${emp.amount.toLocaleString()}
-          <a href="https://www.torn.com/messages.php#/p=compose&XID=${emp.id}" target="_blank" style="color:#66ccff;margin-left:10px;">Send Reminder</a></li>`;
-      });
-      reminderHtml += `</ul>`;
-    }
-    reminderHtml += `</div>`;
-
-    container.innerHTML = html + reminderHtml;
-  }
+  
 
   function getWeekNumber(d) {
     d = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
@@ -336,25 +452,261 @@
 
   function makeFakeData() {
     const employees = {
-      101: "Alice", 102: "Bob", 103: "Charlie", 104: "Diana"
+      101: 'Alice',
+      102: 'Bob',
+      103: 'Charlie',
+      104: 'Diana'
     };
     const weeklyData = {};
-    const now = new Date();
-    const [year, currentWeek] = getWeekNumber(now);
-    for (let i = SETTINGS.startWeek; i <= currentWeek; i++) {
-      const weekKey = `${year}-W${i}`;
+    const weekKeys = generateWeekKeys(SETTINGS.startYear, SETTINGS.startWeek);
+    weekKeys.forEach(weekKey => {
       weeklyData[weekKey] = {};
       Object.keys(employees).forEach(id => {
-        const rand = Math.random();
-        if (rand < 0.2) {
-          weeklyData[weekKey][id] = 0; // missed
-        } else if (rand < 0.9) {
-          weeklyData[weekKey][id] = SETTINGS.requiredTax; // exact
+        if (!SETTINGS.memberRequirements[id]) {
+          const type = Math.random() < 0.5 ? 'money' : 'item';
+          SETTINGS.memberRequirements[id] = {
+            type,
+            amount: type === 'money' ? SETTINGS.defaultMoneyTax : SETTINGS.defaultItemTax
+          };
+        }
+        const req = SETTINGS.memberRequirements[id];
+        const miss = Math.random() < 0.25;
+        const over = Math.random() > 0.85;
+        const paidAmount = miss ? 0 : over ? req.amount * 2 : req.amount;
+        weeklyData[weekKey][id] = { money: 0, items: 0 };
+        if (req.type === 'item') {
+          weeklyData[weekKey][id].items = paidAmount;
         } else {
-          weeklyData[weekKey][id] = SETTINGS.requiredTax * 2; // overpay
+          weeklyData[weekKey][id].money = paidAmount;
         }
       });
-    }
+    });
+    saveSettings(SETTINGS);
     return { employees, weeklyData };
   }
+  function renderOverview(weeklyData, COMPANY_MEMBERS) {
+    if (!overviewView) return;
+    const weekKeys = generateWeekKeys(SETTINGS.startYear, SETTINGS.startWeek);
+    const displayWeeks = weekKeys.slice(-SETTINGS.maxWeeks);
+
+    if (displayWeeks.length === 0) {
+      overviewView.innerHTML = '<p style="color:#ccc;">No weeks available for the selected start week.</p>';
+      return;
+    }
+
+    const employeeIds = Object.keys(COMPANY_MEMBERS);
+    if (employeeIds.length === 0) {
+      overviewView.innerHTML = '<p style="color:#ccc;">No employees loaded yet. Fetch data to view tax progress.</p>';
+      return;
+    }
+
+    let grandMoneyPaid = 0;
+    let grandMoneyExpected = 0;
+    let grandItemPaid = 0;
+    let grandItemExpected = 0;
+    const owingList = [];
+
+    let html = '<div style="overflow:auto;"><table style="width:100%; border-collapse: collapse; text-align:center; font-size:12px; background:#1b1b1b; color:#ccc;">';
+    html += '<thead><tr style="background:#2a2a2a; color:#fff; font-weight:bold;">';
+    html += '<th style="padding:8px;border:1px solid #444;text-align:left;position:sticky;left:0;background:#2a2a2a;z-index:2;">Employee</th>';
+    displayWeeks.forEach(week => {
+      html += `<th style="padding:8px;border:1px solid #444;">${week}</th>`;
+    });
+    html += '<th style="padding:8px;border:1px solid #444;position:sticky;right:140px;background:#2a2a2a;z-index:2;">Total Paid</th>';
+    html += '<th style="padding:8px;border:1px solid #444;position:sticky;right:0;background:#2a2a2a;z-index:2;">Balance</th></tr></thead><tbody>';
+
+    employeeIds.forEach((id, idx) => {
+      const req = SETTINGS.memberRequirements[id] || { type: 'money', amount: SETTINGS.defaultMoneyTax };
+      const type = req.type === 'item' ? 'item' : 'money';
+      const rowBg = (idx % 2 === 0) ? '#202020' : '#262626';
+      let totalPaid = 0;
+
+      html += `<tr style="background:${rowBg};">`;
+      html += `<td style="padding:6px;border:1px solid #444;text-align:left;color:#fff;position:sticky;left:0;background:${rowBg};">${COMPANY_MEMBERS[id]} [${id}]</td>`;
+
+      displayWeeks.forEach(week => {
+        const data = (weeklyData[week] && weeklyData[week][id]) || { money: 0, items: 0 };
+        const paid = type === 'money' ? data.money : data.items;
+        totalPaid += paid;
+        const met = paid >= req.amount;
+        const cellColor = met ? '#003300' : '#3a0000';
+        const cellText = met ? '#66ff66' : '#ff6666';
+        const paidLabel = type === 'money' ? `$${paid.toLocaleString()}` : `${paid} ${SETTINGS.taxItemName}`;
+        const reqLabel = type === 'money' ? `$${req.amount.toLocaleString()}` : `${req.amount} ${SETTINGS.taxItemName}`;
+        html += `<td style="background:${cellColor};color:${cellText};border:1px solid #444;" title="Paid ${paidLabel} / Required ${reqLabel}">${met ? '✅' : '❌'}</td>`;
+      });
+
+      const expected = displayWeeks.length * req.amount;
+      const balance = totalPaid - expected;
+      const totalLabel = type === 'money' ? `$${totalPaid.toLocaleString()}` : `${totalPaid} ${SETTINGS.taxItemName}`;
+      html += `<td style="color:#66ff66;padding:6px;border:1px solid #444;position:sticky;right:140px;background:${rowBg};">${totalLabel}</td>`;
+
+      if (type === 'money') {
+        grandMoneyPaid += totalPaid;
+        grandMoneyExpected += expected;
+      } else {
+        grandItemPaid += totalPaid;
+        grandItemExpected += expected;
+      }
+
+      if (balance < 0) {
+        const owe = type === 'money' ? `$${Math.abs(balance).toLocaleString()}` : `${Math.abs(balance)} ${SETTINGS.taxItemName}`;
+        html += `<td style="color:#ff6666;padding:6px;border:1px solid #444;position:sticky;right:0;background:${rowBg};">Owes ${owe}</td>`;
+        owingList.push({ id, name: COMPANY_MEMBERS[id], amount: owe });
+      } else if (balance > 0) {
+        const over = type === 'money' ? `$${balance.toLocaleString()}` : `${balance} ${SETTINGS.taxItemName}`;
+        html += `<td style="color:#66ccff;padding:6px;border:1px solid #444;position:sticky;right:0;background:${rowBg};">Overpaid ${over}</td>`;
+      } else {
+        html += `<td style="color:#66ff66;padding:6px;border:1px solid #444;position:sticky;right:0;background:${rowBg};">On Track</td>`;
+      }
+
+      html += '</tr>';
+    });
+
+    html += '</tbody></table></div>';
+
+    let summaryHtml = '<div style="margin-top:12px;padding:10px;background:#222;border:1px solid #444;border-radius:6px;">';
+    summaryHtml += '<strong style="color:#fff;">Summary</strong><br>';
+    if (grandMoneyExpected > 0) {
+      const balance = grandMoneyPaid - grandMoneyExpected;
+      const balanceLabel = balance > 0 ? `Overpaid $${balance.toLocaleString()}` : balance < 0 ? `Owes $${Math.abs(balance).toLocaleString()}` : 'On Track';
+      summaryHtml += `<span style="color:#ccc;">Money: Paid $${grandMoneyPaid.toLocaleString()} / Expected $${grandMoneyExpected.toLocaleString()} (${balanceLabel})</span><br>`;
+    }
+    if (grandItemExpected > 0) {
+      const balance = grandItemPaid - grandItemExpected;
+      const balanceLabel = balance > 0 ? `Overpaid ${balance} ${SETTINGS.taxItemName}` : balance < 0 ? `Owes ${Math.abs(balance)} ${SETTINGS.taxItemName}` : 'On Track';
+      summaryHtml += `<span style="color:#ccc;">Items: Paid ${grandItemPaid} ${SETTINGS.taxItemName} / Expected ${grandItemExpected} ${SETTINGS.taxItemName} (${balanceLabel})</span><br>`;
+    }
+    summaryHtml += '</div>';
+
+    let reminderHtml = '<div style="margin-top:12px;padding:10px;background:#222;border:1px solid #444;border-radius:6px;">';
+    reminderHtml += '<h4 style="color:#fff;margin:0 0 10px 0;">Employees Owing Tax</h4>';
+    if (owingList.length === 0) {
+      reminderHtml += '<p style="color:lightgreen;">All employees are fully paid up ✅</p>';
+    } else {
+      reminderHtml += '<ul style="list-style:none;padding:0;margin:0;">';
+      owingList.forEach(emp => {
+        const reminderText = SETTINGS.reminderMessage
+          .replace(/\{name\}/g, emp.name)
+          .replace(/\{id\}/g, emp.id)
+          .replace(/\{amount\}/g, emp.amount);
+        reminderHtml += `<li style="margin:6px 0;color:#ff6666;">${emp.name} [${emp.id}] owes ${emp.amount}
+          <a href="#" data-id="${emp.id}" data-msg="${encodeURIComponent(reminderText)}" class="tax-reminder-link" style="color:#66ccff;margin-left:10px;">Copy Reminder</a></li>`;
+      });
+      reminderHtml += '</ul>';
+    }
+    reminderHtml += '</div>';
+
+    overviewView.innerHTML = html + summaryHtml + reminderHtml;
+
+    overviewView.querySelectorAll('.tax-reminder-link').forEach(link => {
+      link.addEventListener('click', e => {
+        e.preventDefault();
+        const msg = decodeURIComponent(link.getAttribute('data-msg'));
+        const empId = link.getAttribute('data-id');
+        navigator.clipboard.writeText(msg).then(() => {
+          alert('Reminder message copied to clipboard! Paste it in the compose box (Ctrl+V).');
+          window.open(`https://www.torn.com/messages.php#/p=compose&XID=${empId}`, '_blank');
+        });
+      });
+    });
+  }
+
+  function renderEmployeeMenu(employees) {
+    if (!employeeView) return;
+    if (!SETTINGS.enableEmployeeMenu) {
+      employeeView.innerHTML = '<p style="color:#ccc;">Enable the employees menu in Settings to manage individual tax.</p>';
+      return;
+    }
+
+    const ids = Object.keys(employees);
+    if (ids.length === 0) {
+      employeeView.innerHTML = '<p style="color:#ccc;">No employees available. Load data first.</p>';
+      return;
+    }
+
+    const rows = ids.sort((a, b) => employees[a].localeCompare(employees[b])).map(id => {
+      const req = SETTINGS.memberRequirements[id] || { type: 'money', amount: SETTINGS.defaultMoneyTax };
+      const selectedMoney = req.type === 'item' ? '' : 'selected';
+      const selectedItem = req.type === 'item' ? 'selected' : '';
+      return `
+        <tr>
+          <td style="padding:6px;border:1px solid #444;text-align:left;color:#fff;">${employees[id]} [${id}]</td>
+          <td style="padding:6px;border:1px solid #444;">
+            <select data-id="${id}" class="emp-req-type" style="width:120px;background:#111;color:#0f0;border:1px solid #555;border-radius:4px;padding:4px;">
+              <option value="money" ${selectedMoney}>Money</option>
+              <option value="item" ${selectedItem}>${SETTINGS.taxItemName}</option>
+            </select>
+          </td>
+          <td style="padding:6px;border:1px solid #444;">
+            <input type="number" data-id="${id}" class="emp-req-amount" value="${req.amount}" style="width:120px;background:#111;color:#0f0;border:1px solid #555;border-radius:4px;padding:4px;">
+          </td>
+        </tr>`;
+    }).join('');
+
+    employeeView.innerHTML = `
+      <div style="overflow:auto;height:calc(100% - 50px);">
+        <table style="width:100%;border-collapse:collapse;background:#1b1b1b;color:#ccc;font-size:12px;">
+          <thead>
+            <tr style="background:#2a2a2a;color:#fff;font-weight:bold;">
+              <th style="padding:8px;border:1px solid #444;text-align:left;">Employee</th>
+              <th style="padding:8px;border:1px solid #444;">Type</th>
+              <th style="padding:8px;border:1px solid #444;">Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows}
+          </tbody>
+        </table>
+      </div>
+      <div style="margin-top:10px;text-align:right;">
+        <button id="saveEmployeeRequirements" style="background:#2e8b57;color:white;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;">Save Changes</button>
+      </div>
+    `;
+
+    const saveButton = employeeView.querySelector('#saveEmployeeRequirements');
+    if (saveButton) {
+      saveButton.addEventListener('click', () => {
+        const types = employeeView.querySelectorAll('.emp-req-type');
+        const amounts = employeeView.querySelectorAll('.emp-req-amount');
+        types.forEach(select => {
+          const id = select.getAttribute('data-id');
+          const type = select.value === 'item' ? 'item' : 'money';
+          const amountInput = Array.from(amounts).find(input => input.getAttribute('data-id') === id);
+          const amountValue = amountInput ? parseInt(amountInput.value, 10) : NaN;
+          const fallback = type === 'money' ? SETTINGS.defaultMoneyTax : SETTINGS.defaultItemTax;
+          SETTINGS.memberRequirements[id] = {
+            type,
+            amount: isNaN(amountValue) ? fallback : amountValue
+          };
+        });
+        saveSettings(SETTINGS);
+        renderOverview(lastWeeklyDataCache, lastEmployeesCache);
+        alert('Employee requirements saved.');
+      });
+    }
+  }
+
+  function safe(obj, path) {
+    return path.split('.').reduce((acc, key) => (acc && acc[key] !== undefined ? acc[key] : undefined), obj);
+  }
+
+  function generateWeekMapFrom(startYear, startWeek) {
+    const map = {};
+    const now = new Date();
+    const [currentYear, currentWeek] = getWeekNumber(now);
+    for (let year = startYear; year <= currentYear; year++) {
+      const maxWeek = year === currentYear ? currentWeek : 53;
+      const start = year === startYear ? startWeek : 1;
+      for (let week = start; week <= maxWeek; week++) {
+        map[`${year}-W${week}`] = true;
+      }
+    }
+    return map;
+  }
+
+  function generateWeekKeys(startYear, startWeek) {
+    return Object.keys(generateWeekMapFrom(startYear, startWeek));
+  }
+
 })();
