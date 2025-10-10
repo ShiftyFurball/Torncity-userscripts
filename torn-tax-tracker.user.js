@@ -21,6 +21,488 @@
 
   const STORAGE_KEY_SETTINGS = "torn_tax_settings_v41";
 
+  const existingStyle = document.getElementById("torn-tax-style");
+  if (!existingStyle) {
+    const style = document.createElement("style");
+    style.id = "torn-tax-style";
+    style.textContent = `
+      :root {
+        color-scheme: dark;
+      }
+
+      .torn-tax-open-button {
+        position: fixed;
+        top: 35%;
+        right: 22px;
+        z-index: 9999;
+        padding: 10px 18px;
+        border: none;
+        border-radius: 999px;
+        font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        font-size: 12px;
+        color: #ffffff;
+        background: linear-gradient(135deg, #6366f1, #22d3ee);
+        box-shadow: 0 12px 24px rgba(34, 211, 238, 0.25);
+        cursor: pointer;
+        transition: transform 0.2s ease, box-shadow 0.2s ease, filter 0.2s ease;
+      }
+
+      .torn-tax-open-button:hover {
+        transform: translateY(-2px) scale(1.02);
+        box-shadow: 0 16px 32px rgba(99, 102, 241, 0.35);
+        filter: brightness(1.05);
+      }
+
+      .torn-tax-panel {
+        display: none;
+        position: fixed;
+        top: 10%;
+        left: 10%;
+        width: 80%;
+        height: 75%;
+        min-width: 320px;
+        background: linear-gradient(145deg, rgba(20, 24, 34, 0.96), rgba(12, 16, 24, 0.96));
+        color: #f5f5f5;
+        font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+        padding: 0;
+        z-index: 10000;
+        border-radius: 18px;
+        overflow: hidden;
+        box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        backdrop-filter: blur(14px);
+      }
+
+      .torn-tax-panel::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background: radial-gradient(circle at 15% 15%, rgba(99, 102, 241, 0.2), transparent 55%),
+                    radial-gradient(circle at 85% 20%, rgba(34, 211, 238, 0.16), transparent 60%);
+        opacity: 0.6;
+      }
+
+      .torn-tax-panel__content {
+        position: relative;
+        height: calc(100% - 60px);
+        overflow: hidden;
+        padding: 0 18px 18px;
+      }
+
+      .tax-panel__header {
+        position: relative;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        background: linear-gradient(135deg, rgba(99, 102, 241, 0.9), rgba(34, 211, 238, 0.9));
+        padding: 14px 18px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.16);
+        cursor: move;
+      }
+
+      .tax-panel__title {
+        font-size: 18px;
+        font-weight: 700;
+        flex: 1;
+        letter-spacing: 0.02em;
+      }
+
+      .tax-panel__actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .tax-action-button,
+      .tax-button {
+        border-radius: 10px;
+        border: 1px solid transparent;
+        padding: 6px 12px;
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: 0.01em;
+        cursor: pointer;
+        transition: transform 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease;
+        background: rgba(255, 255, 255, 0.08);
+        color: #f3f4ff;
+      }
+
+      .tax-action-button:hover,
+      .tax-button:hover {
+        transform: translateY(-1px);
+        filter: brightness(1.05);
+      }
+
+      .tax-action-button:active,
+      .tax-button:active {
+        transform: translateY(0);
+        filter: brightness(0.95);
+      }
+
+      .tax-action-button--primary,
+      .tax-button--primary {
+        background: linear-gradient(135deg, #6366f1, #8b5cf6);
+        box-shadow: 0 8px 20px rgba(99, 102, 241, 0.35);
+      }
+
+      .tax-action-button--accent,
+      .tax-button--accent {
+        background: linear-gradient(135deg, #22d3ee, #0ea5e9);
+        box-shadow: 0 8px 18px rgba(34, 211, 238, 0.28);
+      }
+
+      .tax-action-button--ghost,
+      .tax-button--ghost {
+        background: rgba(15, 23, 42, 0.45);
+        border-color: rgba(255, 255, 255, 0.12);
+      }
+
+      .tax-action-button--danger,
+      .tax-button--danger {
+        background: linear-gradient(135deg, #f87171, #ef4444);
+        box-shadow: 0 8px 18px rgba(239, 68, 68, 0.3);
+      }
+
+      .tax-action-button.is-hidden {
+        display: none !important;
+      }
+
+      .tax-table-wrapper {
+        position: relative;
+        height: 100%;
+        overflow: auto;
+        padding-right: 6px;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(148, 163, 184, 0.45) transparent;
+      }
+
+      .tax-table-wrapper::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+      }
+
+      .tax-table-wrapper::-webkit-scrollbar-thumb {
+        background: rgba(148, 163, 184, 0.45);
+        border-radius: 999px;
+      }
+
+      .tax-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+        background: rgba(13, 16, 26, 0.72);
+        backdrop-filter: blur(8px);
+        border-radius: 14px;
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.05);
+      }
+
+      .tax-table thead {
+        position: sticky;
+        top: 0;
+        z-index: 3;
+        background: rgba(20, 24, 34, 0.92);
+        backdrop-filter: blur(10px);
+      }
+
+      .tax-table__header,
+      .tax-table__cell {
+        padding: 10px 12px;
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        text-align: center;
+      }
+
+      .tax-table__header {
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: #dbeafe;
+        background: rgba(30, 41, 59, 0.8);
+      }
+
+      .tax-table__row:nth-child(odd) {
+        background: rgba(15, 23, 42, 0.6);
+      }
+
+      .tax-table__row:nth-child(even) {
+        background: rgba(30, 41, 59, 0.55);
+      }
+
+      .tax-table__cell--name {
+        text-align: left;
+        font-weight: 600;
+        color: #f8fafc;
+        white-space: nowrap;
+      }
+
+      .tax-table__cell--sticky-left {
+        position: sticky;
+        left: 0;
+        background: inherit;
+        z-index: 2;
+      }
+
+      .tax-table__cell--sticky-right {
+        position: sticky;
+        right: 0;
+        background: inherit;
+        z-index: 2;
+      }
+
+      .tax-week {
+        font-weight: 600;
+        letter-spacing: 0.05em;
+        border: none;
+      }
+
+      .tax-week--success {
+        background: rgba(34, 197, 94, 0.18);
+        color: #4ade80;
+      }
+
+      .tax-week--danger {
+        background: rgba(248, 113, 113, 0.16);
+        color: #fca5a5;
+      }
+
+      .tax-balance {
+        font-weight: 600;
+        text-align: center;
+      }
+
+      .tax-balance--owing {
+        color: #fda4af;
+        background: rgba(248, 113, 113, 0.14);
+      }
+
+      .tax-balance--overpaid {
+        color: #38bdf8;
+        background: rgba(56, 189, 248, 0.14);
+      }
+
+      .tax-balance--ontime {
+        color: #86efac;
+        background: rgba(34, 197, 94, 0.12);
+      }
+
+      .tax-reminder-card {
+        position: relative;
+        margin-top: 16px;
+        padding: 16px 18px;
+        border-radius: 14px;
+        background: linear-gradient(145deg, rgba(15, 23, 42, 0.85), rgba(30, 41, 59, 0.78));
+        border: 1px solid rgba(148, 163, 184, 0.18);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+      }
+
+      .tax-reminder-card__title {
+        margin: 0 0 10px;
+        font-size: 15px;
+        font-weight: 700;
+        color: #e0f2fe;
+      }
+
+      .tax-reminder-card__empty {
+        margin: 0;
+        color: #a7f3d0;
+        font-weight: 500;
+      }
+
+      .tax-reminder-card__list {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        display: grid;
+        gap: 10px;
+      }
+
+      .tax-reminder-card__item {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: center;
+        color: #fecaca;
+        background: rgba(239, 68, 68, 0.08);
+        border-radius: 10px;
+        padding: 10px 12px;
+        border: 1px solid rgba(239, 68, 68, 0.18);
+      }
+
+      .tax-reminder-card__link {
+        color: #67e8f9;
+        font-weight: 600;
+        text-decoration: none;
+        padding: 4px 8px;
+        border-radius: 8px;
+        background: rgba(14, 165, 233, 0.15);
+        transition: background 0.2s ease, color 0.2s ease;
+      }
+
+      .tax-reminder-card__link:hover {
+        background: rgba(14, 165, 233, 0.28);
+        color: #bae6fd;
+      }
+
+      .tax-modal {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        width: min(520px, 92vw);
+        background: linear-gradient(160deg, rgba(15, 23, 42, 0.92), rgba(10, 12, 22, 0.96));
+        color: #f8fafc;
+        padding: 24px;
+        z-index: 11000;
+        border-radius: 18px;
+        box-shadow: 0 28px 64px rgba(0, 0, 0, 0.45);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        backdrop-filter: blur(18px);
+        animation: tax-modal-fade 0.18s ease;
+      }
+
+      .tax-modal--wide {
+        width: min(760px, 94vw);
+      }
+
+      .tax-modal--tall {
+        max-height: 78vh;
+        overflow: auto;
+      }
+
+      .tax-modal h3 {
+        margin: 0 0 12px;
+        font-size: 20px;
+        font-weight: 700;
+        color: #c7d2fe;
+      }
+
+      .tax-field {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin-bottom: 14px;
+        font-size: 13px;
+        color: #cbd5f5;
+      }
+
+      .tax-input,
+      .tax-textarea,
+      .tax-select,
+      .tax-modal input[type="number"],
+      .tax-modal input[type="text"],
+      .tax-modal textarea,
+      .tax-modal select {
+        width: 100%;
+        padding: 9px 12px;
+        border-radius: 10px;
+        border: 1px solid rgba(148, 163, 184, 0.35);
+        background: rgba(15, 23, 42, 0.65);
+        color: #f8fafc;
+        font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+        font-size: 14px;
+        transition: border-color 0.15s ease, box-shadow 0.15s ease;
+      }
+
+      .tax-input:focus,
+      .tax-textarea:focus,
+      .tax-select:focus,
+      .tax-modal input[type="number"]:focus,
+      .tax-modal input[type="text"]:focus,
+      .tax-modal textarea:focus,
+      .tax-modal select:focus {
+        outline: none;
+        border-color: rgba(99, 102, 241, 0.65);
+        box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25);
+      }
+
+      .tax-modal small {
+        color: rgba(148, 163, 184, 0.75);
+      }
+
+      .tax-modal__footer {
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px;
+        margin-top: 18px;
+      }
+
+      .tax-modal textarea {
+        min-height: 90px;
+        resize: vertical;
+      }
+
+      .tax-requirements-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 12px;
+        background: rgba(15, 23, 42, 0.65);
+        border-radius: 12px;
+        overflow: hidden;
+        border: 1px solid rgba(148, 163, 184, 0.2);
+      }
+
+      .tax-requirements-table th,
+      .tax-requirements-table td {
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        padding: 10px 12px;
+        text-align: left;
+        font-size: 13px;
+      }
+
+      .tax-requirements-table th {
+        background: rgba(30, 41, 59, 0.75);
+        color: #e2e8f0;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        font-size: 12px;
+      }
+
+      .tax-requirements-table tbody tr:nth-child(odd) {
+        background: rgba(15, 23, 42, 0.65);
+      }
+
+      .tax-requirements-table tbody tr:nth-child(even) {
+        background: rgba(30, 41, 59, 0.55);
+      }
+
+      .tax-modal .tax-select,
+      .tax-modal select {
+        width: auto;
+        min-width: 120px;
+      }
+
+      .tax-resize-handle {
+        width: 18px;
+        height: 18px;
+        background: rgba(148, 163, 184, 0.25);
+        position: absolute;
+        right: 0;
+        bottom: 0;
+        cursor: se-resize;
+        border-top-left-radius: 10px;
+        border-bottom-right-radius: 18px;
+        border: 1px solid rgba(148, 163, 184, 0.35);
+        backdrop-filter: blur(6px);
+      }
+
+      @keyframes tax-modal-fade {
+        from {
+          opacity: 0;
+          transform: translate(-50%, -46%);
+        }
+        to {
+          opacity: 1;
+          transform: translate(-50%, -50%);
+        }
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
   const DEFAULT_SETTINGS = {
     startYear: new Date().getUTCFullYear(),
     startWeek: 40,
@@ -54,34 +536,26 @@
 
   // Floating open button
   const button = document.createElement("button");
-  Object.assign(button.style, {
-    position: "fixed", top: "30%", right: "0%", zIndex: "9999",
-    backgroundColor: "#2e8b57", color: "#fff", border: "none",
-    padding: "6px 10px", borderRadius: "6px 0 0 6px", cursor: "pointer"
-  });
+  button.className = "torn-tax-open-button";
   button.textContent = "Tax";
   document.body.appendChild(button);
 
   // Panel
   const panel = document.createElement("div");
   panel.id = "tax-panel";
-  Object.assign(panel.style, {
-    display: "none", position: "fixed", top: "10%", left: "10%",
-    width: "80%", height: "75%", background: "#1b1b1b", color: "#ccc",
-    padding: "0", zIndex: "10000", borderRadius: "6px", overflow: "hidden",
-    boxShadow: "0px 0px 15px rgba(0,0,0,0.7)", border: "1px solid #333",
-    fontFamily: "Verdana, sans-serif"
-  });
+  panel.className = "torn-tax-panel";
 
   panel.innerHTML = `
-    <div id="drag-bar" style="cursor:move;background:#2a2a2a;color:#fff;padding:6px 10px;border-bottom:1px solid #444;display:flex;align-items:center;gap:8px;">
-      <span style="font-weight:bold;flex:1;">Weekly Tax Tracker</span>
-      <button id="editSettings" style="background:#444;color:white;border:none;padding:4px 8px;cursor:pointer;border-radius:4px;">Settings</button>
-      <button id="editRequirements" style="background:#3c6;color:white;border:none;padding:4px 8px;cursor:pointer;border-radius:4px;">Requirements</button>
-      <button id="editEmployees" style="display:${SETTINGS.manualMode ? "inline-block" : "none"};background:#555;color:white;border:none;padding:4px 8px;cursor:pointer;border-radius:4px;">Edit Employees</button>
-      <button id="close-tax" style="background:#b30000;color:white;border:none;padding:4px 8px;cursor:pointer;border-radius:4px;">X</button>
+    <div id="drag-bar" class="tax-panel__header">
+      <span class="tax-panel__title">Weekly Tax Tracker</span>
+      <div class="tax-panel__actions">
+        <button id="editSettings" class="tax-action-button tax-action-button--ghost">Settings</button>
+        <button id="editRequirements" class="tax-action-button tax-action-button--accent">Requirements</button>
+        <button id="editEmployees" class="tax-action-button tax-action-button--ghost ${SETTINGS.manualMode ? "" : "is-hidden"}">Edit Employees</button>
+        <button id="close-tax" class="tax-action-button tax-action-button--danger">Close</button>
+      </div>
     </div>
-    <div id="taxTable" style="height:calc(100% - 44px);overflow:auto;padding:10px;"></div>
+    <div id="taxTable" class="torn-tax-panel__content"></div>
   `;
   document.body.appendChild(panel);
 
@@ -105,16 +579,15 @@
   // --- UI: API key prompt
   function showApiPrompt() {
     const editor = document.createElement("div");
-    Object.assign(editor.style, {
-      position: "fixed", top: "30%", left: "35%", width: "30%",
-      background: "#222", color: "#fff", padding: "15px", zIndex: "11000",
-      borderRadius: "6px", boxShadow: "0px 0px 10px rgba(0,0,0,0.7)"
-    });
+    editor.className = "tax-modal";
     editor.innerHTML = `
-      <h3 style="margin:0 0 10px 0;">Enter Torn API Key</h3>
-      <input id="apiInput" type="text" value="${SETTINGS.apiKey}" style="width:100%;padding:6px;background:#111;color:#0f0;border:1px solid #555;">
-      <div style="text-align:right;margin-top:10px;">
-        <button id="saveApi" style="background:#2e8b57;color:white;padding:5px 10px;border:none;border-radius:4px;cursor:pointer;">Save</button>
+      <h3>Enter Torn API Key</h3>
+      <label class="tax-field">
+        <span>Your API Key</span>
+        <input id="apiInput" type="text" class="tax-input" value="${SETTINGS.apiKey}">
+      </label>
+      <div class="tax-modal__footer">
+        <button id="saveApi" class="tax-button tax-button--primary">Save</button>
       </div>
     `;
     document.body.appendChild(editor);
@@ -130,48 +603,53 @@
   // --- UI: Settings
   function showSettingsEditor() {
     const e = document.createElement("div");
-    Object.assign(e.style, {
-      position: "fixed", top: "14%", left: "32%", width: "36%",
-      background: "#222", color: "#fff", padding: "15px", zIndex: "11000",
-      borderRadius: "8px", boxShadow: "0px 0px 10px rgba(0,0,0,0.7)"
-    });
+    e.className = "tax-modal";
 
     e.innerHTML = `
-      <h3 style="margin:0 0 10px 0;">Settings</h3>
-      <label>Start Year:
-        <input id="setYear" type="number" value="${SETTINGS.startYear}" style="width:90px;background:#111;color:#0f0;border:1px solid #555;margin-left:8px;">
-      </label><br><br>
-      <label>Start Week:
-        <input id="setWeek" type="number" value="${SETTINGS.startWeek}" style="width:90px;background:#111;color:#0f0;border:1px solid #555;margin-left:8px;">
-      </label><br><br>
-      <label>Max Weeks to Display:
-        <input id="setMaxWeeks" type="number" value="${SETTINGS.maxWeeks}" style="width:90px;background:#111;color:#0f0;border:1px solid #555;margin-left:8px;">
-      </label><br><br>
-      <label><input id="manualMode" type="checkbox" ${SETTINGS.manualMode ? "checked" : ""}> Manual Employees Mode</label><br><br>
-      <label><input id="testMode" type="checkbox" ${SETTINGS.testMode ? "checked" : ""}> Enable Test Mode (fake data)</label><br><br>
-
-      <fieldset style="border:1px solid #444;padding:8px;">
-        <legend style="padding:0 6px;color:#aaa;">Defaults for New Members</legend>
-        <label>Default Money Tax:
-          <input id="setDefaultMoney" type="number" value="${SETTINGS.defaultMoneyTax}" style="width:140px;background:#111;color:#0f0;border:1px solid #555;margin-left:8px;">
-        </label><br><br>
-        <label>Default Item (name):
-          <input id="setItemName" type="text" value="${SETTINGS.taxItemName}" style="width:140px;background:#111;color:#0f0;border:1px solid #555;margin-left:8px;">
-        </label><br><br>
-        <label>Default Item Tax (qty):
-          <input id="setDefaultItem" type="number" value="${SETTINGS.defaultItemTax}" style="width:90px;background:#111;color:#0f0;border:1px solid #555;margin-left:8px;">
-        </label>
-      </fieldset>
-      <br>
-
-      <label>Reminder Message:<br>
-        <textarea id="setReminder" style="width:100%;height:80px;background:#111;color:#0f0;border:1px solid #555;margin-top:6px;">${SETTINGS.reminderMessage}</textarea>
-        <small style="color:#aaa;">Use placeholders: {name}, {id}, {amount}</small>
+      <h3>Settings</h3>
+      <div class="tax-field">
+        <label for="setYear">Start Year</label>
+        <input id="setYear" type="number" class="tax-input" value="${SETTINGS.startYear}">
+      </div>
+      <div class="tax-field">
+        <label for="setWeek">Start Week</label>
+        <input id="setWeek" type="number" class="tax-input" value="${SETTINGS.startWeek}">
+      </div>
+      <div class="tax-field">
+        <label for="setMaxWeeks">Max Weeks to Display</label>
+        <input id="setMaxWeeks" type="number" class="tax-input" value="${SETTINGS.maxWeeks}">
+      </div>
+      <label class="tax-field">
+        <span><input id="manualMode" type="checkbox" ${SETTINGS.manualMode ? "checked" : ""}> Manual Employees Mode</span>
+      </label>
+      <label class="tax-field">
+        <span><input id="testMode" type="checkbox" ${SETTINGS.testMode ? "checked" : ""}> Enable Test Mode (fake data)</span>
       </label>
 
-      <div style="text-align:right;margin-top:12px;">
-        <button id="saveSet" style="background:#2e8b57;color:white;padding:6px 12px;border:none;border-radius:4px;cursor:pointer;">Save</button>
-        <button id="cancelSet" style="background:#555;color:white;padding:6px 12px;border:none;border-radius:4px;cursor:pointer;">Cancel</button>
+      <fieldset style="border:1px solid rgba(148, 163, 184, 0.25);padding:12px;border-radius:12px;margin-top:14px;">
+        <legend style="padding:0 6px;color:#cbd5f5;font-size:12px;text-transform:uppercase;letter-spacing:0.08em;">Defaults for New Members</legend>
+        <div class="tax-field">
+          <label for="setDefaultMoney">Default Money Tax</label>
+          <input id="setDefaultMoney" class="tax-input" type="number" value="${SETTINGS.defaultMoneyTax}">
+        </div>
+        <div class="tax-field">
+          <label for="setItemName">Default Item (name)</label>
+          <input id="setItemName" class="tax-input" type="text" value="${SETTINGS.taxItemName}">
+        </div>
+        <div class="tax-field">
+          <label for="setDefaultItem">Default Item Tax (qty)</label>
+          <input id="setDefaultItem" class="tax-input" type="number" value="${SETTINGS.defaultItemTax}">
+        </div>
+      </fieldset>
+
+      <label class="tax-field">Reminder Message
+        <textarea id="setReminder" class="tax-textarea">${SETTINGS.reminderMessage}</textarea>
+        <small>Use placeholders: {name}, {id}, {amount}</small>
+      </label>
+
+      <div class="tax-modal__footer">
+        <button id="saveSet" class="tax-button tax-button--primary">Save</button>
+        <button id="cancelSet" class="tax-button tax-button--ghost">Cancel</button>
       </div>
     `;
     document.body.appendChild(e);
@@ -188,7 +666,7 @@
       SETTINGS.reminderMessage = e.querySelector("#setReminder").value.trim();
       saveSettings(SETTINGS);
       e.remove();
-      panel.querySelector("#editEmployees").style.display = SETTINGS.manualMode ? "inline-block" : "none";
+      panel.querySelector("#editEmployees").classList.toggle("is-hidden", !SETTINGS.manualMode);
       fetchData();
     });
   }
@@ -196,11 +674,7 @@
   // --- UI: Manual employees editor
   function showEmployeeEditor() {
     const editor = document.createElement("div");
-    Object.assign(editor.style, {
-      position: "fixed", top: "15%", left: "25%", width: "50%",
-      background: "#222", color: "#fff", padding: "15px", zIndex: "11000",
-      borderRadius: "8px", boxShadow: "0px 0px 10px rgba(0,0,0,0.7)"
-    });
+    editor.className = "tax-modal tax-modal--wide tax-modal--tall";
 
     let text = "";
     Object.keys(SETTINGS.manualMembers).forEach(id => {
@@ -209,12 +683,12 @@
     });
 
     editor.innerHTML = `
-      <h3 style="margin:0 0 10px 0;">Manual Employees (id:name:type:amount)</h3>
-      <textarea id="empInput" style="width:100%;height:220px;background:#111;color:#0f0;border:1px solid #555;">${text.trim()}</textarea>
-      <small style="color:#aaa;">Example: 12345:Alice:money:10000000 OR 67890:Bob:xanax:7</small>
-      <div style="text-align:right;margin-top:10px;">
-        <button id="saveEmp" style="background:#2e8b57;color:white;padding:6px 12px;border:none;border-radius:4px;cursor:pointer;">Save</button>
-        <button id="cancelEmp" style="background:#555;color:white;padding:6px 12px;border:none;border-radius:4px;cursor:pointer;">Cancel</button>
+      <h3>Manual Employees (id:name:type:amount)</h3>
+      <textarea id="empInput" class="tax-textarea" style="height:240px;">${text.trim()}</textarea>
+      <small>Example: 12345:Alice:money:10000000 OR 67890:Bob:xanax:7</small>
+      <div class="tax-modal__footer">
+        <button id="saveEmp" class="tax-button tax-button--primary">Save</button>
+        <button id="cancelEmp" class="tax-button tax-button--ghost">Cancel</button>
       </div>
     `;
     document.body.appendChild(editor);
@@ -242,49 +716,46 @@
   // --- UI: Requirements editor (works in API or Manual mode)
   function showRequirementsEditor(currentEmployees = lastEmployeesCache) {
     const editor = document.createElement("div");
-    Object.assign(editor.style, {
-      position: "fixed", top: "10%", left: "10%", width: "80%", height: "70%",
-      background: "#222", color: "#fff", padding: "15px", zIndex: "11000",
-      borderRadius: "8px", boxShadow: "0px 0px 10px rgba(0,0,0,0.7)", overflow: "auto",
-      minWidth: "320px", minHeight: "240px"
-    });
+    editor.className = "tax-modal tax-modal--wide tax-modal--tall";
 
     const rows = Object.keys(currentEmployees || {}).sort((a,b)=>currentEmployees[a].localeCompare(currentEmployees[b]))
       .map(id => {
         const req = SETTINGS.memberRequirements[id] || { type: "money", amount: SETTINGS.defaultMoneyTax };
         return `
           <tr>
-            <td style="padding:6px;border:1px solid #444;color:#fff;">${currentEmployees[id]} [${id}]</td>
-            <td style="padding:6px;border:1px solid #444;">
-              <select data-id="${id}" class="req-type" style="background:#111;color:#0f0;border:1px solid #555;">
+            <td>${currentEmployees[id]} [${id}]</td>
+            <td>
+              <select data-id="${id}" class="req-type tax-select">
                 <option value="money" ${req.type==="money"?"selected":""}>Money</option>
                 <option value="xanax" ${req.type==="xanax"?"selected":""}>${SETTINGS.taxItemName}</option>
               </select>
             </td>
-            <td style="padding:6px;border:1px solid #444;">
-              <input type="number" class="req-amount" data-id="${id}" value="${req.amount}" style="width:140px;background:#111;color:#0f0;border:1px solid #555;">
+            <td>
+              <input type="number" class="req-amount tax-input" data-id="${id}" value="${req.amount}">
             </td>
           </tr>`;
       }).join("");
 
     editor.innerHTML = `
-      <div id="req-drag-bar" style="cursor:move;background:#2a2a2a;color:#fff;padding:6px 10px;margin:-15px -15px 10px -15px;border-radius:8px 8px 0 0;border-bottom:1px solid #444;font-weight:bold;">Member Requirements</div>
-      <div style="margin-bottom:6px;color:#aaa;">Item name shown as "${SETTINGS.taxItemName}" (change in Settings)</div>
-      <table style="width:100%;border-collapse:collapse;">
+      <div id="req-drag-bar" class="tax-panel__header" style="border-radius:14px 14px 0 0; cursor:move; margin:-24px -24px 18px;">
+        <span class="tax-panel__title" style="font-size:16px;">Member Requirements</span>
+      </div>
+      <div style="margin-bottom:12px;color:#cbd5f5;">Item name shown as "${SETTINGS.taxItemName}" (change in Settings)</div>
+      <table class="tax-requirements-table">
         <thead>
-          <tr style="background:#2a2a2a;">
-            <th style="padding:6px;border:1px solid #444;text-align:left;">Member</th>
-            <th style="padding:6px;border:1px solid #444;">Type</th>
-            <th style="padding:6px;border:1px solid #444;">Amount</th>
+          <tr>
+            <th>Member</th>
+            <th>Type</th>
+            <th>Amount</th>
           </tr>
         </thead>
         <tbody>
-          ${rows || "<tr><td colspan='3' style='padding:10px;color:#aaa;border:1px solid #444;'>No employees loaded yet.</td></tr>"}
+          ${rows || "<tr><td colspan='3' style='padding:12px;color:#cbd5f5;'>No employees loaded yet.</td></tr>"}
         </tbody>
       </table>
-      <div style="text-align:right;margin-top:12px;">
-        <button id="saveReqs" style="background:#2e8b57;color:white;padding:6px 12px;border:none;border-radius:4px;cursor:pointer;">Save</button>
-        <button id="cancelReqs" style="background:#555;color:white;padding:6px 12px;border:none;border-radius:4px;cursor:pointer;">Cancel</button>
+      <div class="tax-modal__footer">
+        <button id="saveReqs" class="tax-button tax-button--primary">Save</button>
+        <button id="cancelReqs" class="tax-button tax-button--ghost">Cancel</button>
       </div>
     `;
     document.body.appendChild(editor);
@@ -414,42 +885,43 @@
     const allWeekKeys = Object.keys(generateWeekMapFrom(SETTINGS.startYear, SETTINGS.startWeek));
     const displayWeeks = allWeekKeys.slice(-SETTINGS.maxWeeks);
 
-    let html = `<div style="overflow:auto;"><table style="width:100%; border-collapse: collapse; text-align:center; font-size:12px; background:#1b1b1b; color:#ccc;">`;
-    html += `<thead><tr style="background:#2a2a2a; color:#fff; font-weight:bold;">`;
-    html += `<th style="padding:8px;border:1px solid #444;text-align:left;position:sticky;left:0;background:#2a2a2a;z-index:2;">Employee</th>`;
+    let html = `<div class=\"tax-table-wrapper\"><table class=\"tax-table\">`;
+    html += `<thead><tr>`;
+    html += `<th class=\"tax-table__header tax-table__cell--sticky-left\">Employee</th>`;
     displayWeeks.forEach(week => {
-      html += `<th style="padding:8px;border:1px solid #444;">${week}</th>`;
+      html += `<th class=\"tax-table__header\">${week}</th>`;
     });
-    html += `<th style="padding:8px;border:1px solid #444;position:sticky;right:0;background:#2a2a2a;z-index:2;">Balance</th></tr></thead><tbody>`;
+    html += `<th class=\"tax-table__header tax-table__cell--sticky-right\">Balance</th></tr></thead><tbody>`;
 
     const owingList = [];
 
     Object.keys(COMPANY_MEMBERS).forEach((id, idx) => {
       const req = SETTINGS.memberRequirements[id] || { type: "money", amount: SETTINGS.defaultMoneyTax };
-      const rowBg = (idx % 2 === 0) ? "#202020" : "#262626";
-      html += `<tr style="background:${rowBg};">`;
-      html += `<td style="padding:6px;border:1px solid #444;text-align:left;color:#fff;position:sticky;left:0;background:${rowBg};">${COMPANY_MEMBERS[id]} [${id}]</td>`;
+      const rowClass = idx % 2 === 0 ? "tax-table__row tax-table__row--even" : "tax-table__row tax-table__row--odd";
+      html += `<tr class=\"${rowClass}\">`;
+      html += `<td class=\"tax-table__cell tax-table__cell--name tax-table__cell--sticky-left\">${COMPANY_MEMBERS[id]} [${id}]</td>`;
 
       let totalPaid = 0;
       displayWeeks.forEach(week => {
         const wk = weeklyData[week] && weeklyData[week][id] ? weeklyData[week][id] : { money: 0, items: 0 };
         const paid = (req.type === "money") ? wk.money : wk.items;
         totalPaid += paid;
-        html += paid >= req.amount
-          ? `<td style="background:#003300;color:#66ff66;border:1px solid #444;">✅</td>`
-          : `<td style="background:#3a0000;color:#ff6666;border:1px solid #444;">❌</td>`;
+        const statusClass = paid >= req.amount ? "tax-week tax-week--success" : "tax-week tax-week--danger";
+        const statusIcon = paid >= req.amount ? "✔" : "✖";
+        const title = paid >= req.amount ? "Requirement met" : "Requirement missed";
+        html += `<td class=\"${statusClass}\" title=\"${title}\">${statusIcon}</td>`;
       });
 
       const expected = displayWeeks.length * req.amount;
       const balance = totalPaid - expected;
 
       if (balance < 0) {
-        html += `<td style="color:#ff6666;padding:6px;border:1px solid #444;position:sticky;right:0;background:${rowBg};">Owes ${req.type === "money" ? "$" + Math.abs(balance).toLocaleString() : Math.abs(balance) + " " + SETTINGS.taxItemName}</td>`;
+        html += `<td class=\"tax-table__cell tax-table__cell--sticky-right tax-balance tax-balance--owing\">Owes ${req.type === "money" ? "$" + Math.abs(balance).toLocaleString() : Math.abs(balance) + " " + SETTINGS.taxItemName}</td>`;
         owingList.push({ id, name: COMPANY_MEMBERS[id], amount: req.type === "money" ? "$" + Math.abs(balance).toLocaleString() : Math.abs(balance) + " " + SETTINGS.taxItemName });
       } else if (balance > 0) {
-        html += `<td style="color:#66ccff;padding:6px;border:1px solid #444;position:sticky;right:0;background:${rowBg};">Overpaid ${req.type === "money" ? "$" + balance.toLocaleString() : balance + " " + SETTINGS.taxItemName}</td>`;
+        html += `<td class=\"tax-table__cell tax-table__cell--sticky-right tax-balance tax-balance--overpaid\">Overpaid ${req.type === "money" ? "$" + balance.toLocaleString() : balance + " " + SETTINGS.taxItemName}</td>`;
       } else {
-        html += `<td style="color:#66ff66;padding:6px;border:1px solid #444;position:sticky;right:0;background:${rowBg};">On Track</td>`;
+        html += `<td class=\"tax-table__cell tax-table__cell--sticky-right tax-balance tax-balance--ontime\">On Track</td>`;
       }
 
       html += `</tr>`;
@@ -458,21 +930,21 @@
     html += `</tbody></table></div>`;
 
     // Reminders box
-    let reminderHtml = `<div style="margin-top:15px;padding:10px;background:#222;border:1px solid #444;border-radius:6px;">`;
-    reminderHtml += `<h4 style="color:#fff;margin:0 0 10px 0;">Employees Owing Tax</h4>`;
+    let reminderHtml = `<div class=\"tax-reminder-card\">`;
+    reminderHtml += `<h4 class=\"tax-reminder-card__title\">Employees Owing Tax</h4>`;
     if (owingList.length === 0) {
-      reminderHtml += `<p style="color:lightgreen;">All employees are fully paid up ✅</p>`;
+      reminderHtml += `<p class=\"tax-reminder-card__empty\">All employees are fully paid up ✅</p>`;
     } else {
-      reminderHtml += `<ul style="list-style:none;padding:0;margin:0;">`;
+      reminderHtml += `<ul class=\"tax-reminder-card__list\">`;
       owingList.forEach(emp => {
         const msg = SETTINGS.reminderMessage
           .replace(/{name}/g, emp.name)
           .replace(/{id}/g, emp.id)
           .replace(/{amount}/g, emp.amount);
-        reminderHtml += `<li style="margin:6px 0;color:#ff6666;">
-          ${emp.name} [${emp.id}] owes ${emp.amount}
-          <a href="#" data-id="${emp.id}" data-msg="${encodeURIComponent(msg)}"
-             class="send-reminder" style="color:#66ccff;margin-left:10px;">Send Reminder</a></li>`;
+        reminderHtml += `<li class=\"tax-reminder-card__item\">
+          <span>${emp.name} [${emp.id}] owes ${emp.amount}</span>
+          <a href=\"#\" data-id=\"${emp.id}\" data-msg=\"${encodeURIComponent(msg)}\"
+             class=\"send-reminder tax-reminder-card__link\">Send Reminder</a></li>`;
       });
       reminderHtml += `</ul>`;
     }
@@ -533,8 +1005,7 @@
 
   function makeResizable(el) {
     const resizeHandle = document.createElement("div");
-    Object.assign(resizeHandle.style, { width: "15px", height: "15px", background: "#444",
-      position: "absolute", right: "0", bottom: "0", cursor: "se-resize", borderTopLeftRadius: "4px" });
+    resizeHandle.className = "tax-resize-handle";
     el.appendChild(resizeHandle);
     resizeHandle.addEventListener("mousedown", e => { e.preventDefault(); document.addEventListener("mousemove", resizePanel); document.addEventListener("mouseup", stopResize); });
     function resizePanel(e) { el.style.width = (e.clientX - el.offsetLeft) + "px"; el.style.height = (e.clientY - el.offsetTop) + "px"; }
