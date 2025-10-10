@@ -245,7 +245,8 @@
     Object.assign(editor.style, {
       position: "fixed", top: "10%", left: "10%", width: "80%", height: "70%",
       background: "#222", color: "#fff", padding: "15px", zIndex: "11000",
-      borderRadius: "8px", boxShadow: "0px 0px 10px rgba(0,0,0,0.7)", overflow: "auto"
+      borderRadius: "8px", boxShadow: "0px 0px 10px rgba(0,0,0,0.7)", overflow: "auto",
+      minWidth: "320px", minHeight: "240px"
     });
 
     const rows = Object.keys(currentEmployees || {}).sort((a,b)=>currentEmployees[a].localeCompare(currentEmployees[b]))
@@ -253,7 +254,7 @@
         const req = SETTINGS.memberRequirements[id] || { type: "money", amount: SETTINGS.defaultMoneyTax };
         return `
           <tr>
-            <td style="padding:6px;border:1px solid #444;">${currentEmployees[id]} [${id}]</td>
+            <td style="padding:6px;border:1px solid #444;color:#fff;">${currentEmployees[id]} [${id}]</td>
             <td style="padding:6px;border:1px solid #444;">
               <select data-id="${id}" class="req-type" style="background:#111;color:#0f0;border:1px solid #555;">
                 <option value="money" ${req.type==="money"?"selected":""}>Money</option>
@@ -267,7 +268,7 @@
       }).join("");
 
     editor.innerHTML = `
-      <h3 style="margin:0 0 10px 0;">Member Requirements</h3>
+      <div id="req-drag-bar" style="cursor:move;background:#2a2a2a;color:#fff;padding:6px 10px;margin:-15px -15px 10px -15px;border-radius:8px 8px 0 0;border-bottom:1px solid #444;font-weight:bold;">Member Requirements</div>
       <div style="margin-bottom:6px;color:#aaa;">Item name shown as "${SETTINGS.taxItemName}" (change in Settings)</div>
       <table style="width:100%;border-collapse:collapse;">
         <thead>
@@ -287,6 +288,12 @@
       </div>
     `;
     document.body.appendChild(editor);
+
+    const dragHandle = editor.querySelector("#req-drag-bar");
+    if (dragHandle) {
+      makeDraggable(editor, dragHandle);
+    }
+    makeResizable(editor);
 
     editor.querySelector("#cancelReqs").addEventListener("click", () => editor.remove());
     editor.querySelector("#saveReqs").addEventListener("click", () => {
