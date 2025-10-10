@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      5.1
+// @version      5.2
 // @description  Track weekly company tax from employees in Torn with Torn-styled table, draggable/resizable panel, reminders, overpayment tracking, totals row, and Test Mode.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -67,6 +67,17 @@
 
   let lastEmployeesCache = {};
   let lastWeeklyDataCache = {};
+
+  function getMemberRequirement(id) {
+    const req = SETTINGS.memberRequirements[id];
+    if (!req || req.useDefault) {
+      return { type: 'money', amount: SETTINGS.defaultMoneyTax, isDefault: true };
+    }
+    const type = req.type === 'item' ? 'item' : 'money';
+    const fallback = type === 'item' ? SETTINGS.defaultItemTax : SETTINGS.defaultMoneyTax;
+    const amount = Number.isFinite(req.amount) ? req.amount : fallback;
+    return { type, amount, isDefault: false };
+  }
 
   // Floating open button
   const button = document.createElement("button");
@@ -280,7 +291,7 @@
 
     let text = "";
     Object.keys(SETTINGS.manualMembers).forEach(id => {
-      const req = SETTINGS.memberRequirements[id] || { type: "money", amount: SETTINGS.defaultMoneyTax };
+      const req = getMemberRequirement(id);
       text += `${id}:${SETTINGS.manualMembers[id]}:${req.type}:${req.amount}\n`;
     });
 
@@ -308,7 +319,7 @@
           newList[id] = name;
           const normalizedType = (type === "item" ? "item" : "money");
           const parsedAmount = parseInt(amount || (normalizedType === "money" ? SETTINGS.defaultMoneyTax : SETTINGS.defaultItemTax), 10);
-          newReqs[id] = { type: normalizedType, amount: isNaN(parsedAmount) ? (normalizedType === "money" ? SETTINGS.defaultMoneyTax : SETTINGS.defaultItemTax) : parsedAmount };
+          newReqs[id] = { type: normalizedType, amount: isNaN(parsedAmount) ? (normalizedType === "money" ? SETTINGS.defaultMoneyTax : SETTINGS.defaultItemTax) : parsedAmount, useDefault: false };
         }
       });
       SETTINGS.manualMembers = newList;
@@ -353,7 +364,7 @@
 
       Object.keys(employees).forEach(id => {
         if (!SETTINGS.memberRequirements[id]) {
-          SETTINGS.memberRequirements[id] = { type: "money", amount: SETTINGS.defaultMoneyTax };
+          SETTINGS.memberRequirements[id] = { type: "money", amount: SETTINGS.defaultMoneyTax, useDefault: true };
         }
       });
 
@@ -466,10 +477,11 @@
           const type = Math.random() < 0.5 ? 'money' : 'item';
           SETTINGS.memberRequirements[id] = {
             type,
-            amount: type === 'money' ? SETTINGS.defaultMoneyTax : SETTINGS.defaultItemTax
+            amount: type === 'money' ? SETTINGS.defaultMoneyTax : SETTINGS.defaultItemTax,
+            useDefault: false
           };
         }
-        const req = SETTINGS.memberRequirements[id];
+        const req = getMemberRequirement(id);
         const miss = Math.random() < 0.25;
         const over = Math.random() > 0.85;
         const paidAmount = miss ? 0 : over ? req.amount * 2 : req.amount;
@@ -488,6 +500,7 @@
     if (!overviewView) return;
     const weekKeys = generateWeekKeys(SETTINGS.startYear, SETTINGS.startWeek);
     const displayWeeks = weekKeys.slice(-SETTINGS.maxWeeks);
+    const allWeeks = weekKeys;
 
     if (displayWeeks.length === 0) {
       overviewView.innerHTML = '<p style="color:#ccc;">No weeks available for the selected start week.</p>';
@@ -516,10 +529,13 @@
     html += '<th style="padding:8px;border:1px solid #444;position:sticky;right:0;background:#2a2a2a;z-index:2;">Balance</th></tr></thead><tbody>';
 
     employeeIds.forEach((id, idx) => {
-      const req = SETTINGS.memberRequirements[id] || { type: 'money', amount: SETTINGS.defaultMoneyTax };
+      const req = getMemberRequirement(id);
       const type = req.type === 'item' ? 'item' : 'money';
       const rowBg = (idx % 2 === 0) ? '#202020' : '#262626';
-      let totalPaid = 0;
+      const totalPaid = allWeeks.reduce((sum, week) => {
+        const data = (weeklyData[week] && weeklyData[week][id]) || { money: 0, items: 0 };
+        return sum + (type === 'money' ? data.money : data.items);
+      }, 0);
 
       html += `<tr style="background:${rowBg};">`;
       html += `<td style="padding:6px;border:1px solid #444;text-align:left;color:#fff;position:sticky;left:0;background:${rowBg};">${COMPANY_MEMBERS[id]} [${id}]</td>`;
@@ -527,7 +543,6 @@
       displayWeeks.forEach(week => {
         const data = (weeklyData[week] && weeklyData[week][id]) || { money: 0, items: 0 };
         const paid = type === 'money' ? data.money : data.items;
-        totalPaid += paid;
         const met = paid >= req.amount;
         const cellColor = met ? '#003300' : '#3a0000';
         const cellText = met ? '#66ff66' : '#ff6666';
@@ -536,7 +551,7 @@
         html += `<td style="background:${cellColor};color:${cellText};border:1px solid #444;" title="Paid ${paidLabel} / Required ${reqLabel}">${met ? '✅' : '❌'}</td>`;
       });
 
-      const expected = displayWeeks.length * req.amount;
+      const expected = allWeeks.length * req.amount;
       const balance = totalPaid - expected;
       const totalLabel = type === 'money' ? `$${totalPaid.toLocaleString()}` : `${totalPaid} ${SETTINGS.taxItemName}`;
       html += `<td style="color:#66ff66;padding:6px;border:1px solid #444;position:sticky;right:140px;background:${rowBg};">${totalLabel}</td>`;
@@ -626,20 +641,29 @@
     }
 
     const rows = ids.sort((a, b) => employees[a].localeCompare(employees[b])).map(id => {
-      const req = SETTINGS.memberRequirements[id] || { type: 'money', amount: SETTINGS.defaultMoneyTax };
+      const stored = SETTINGS.memberRequirements[id];
+      const req = getMemberRequirement(id);
+      const isCustom = stored ? !stored.useDefault : false;
       const selectedMoney = req.type === 'item' ? '' : 'selected';
       const selectedItem = req.type === 'item' ? 'selected' : '';
+      const disabledAttr = isCustom ? '' : 'disabled';
       return `
         <tr>
           <td style="padding:6px;border:1px solid #444;text-align:left;color:#fff;">${employees[id]} [${id}]</td>
           <td style="padding:6px;border:1px solid #444;">
-            <select data-id="${id}" class="emp-req-type" style="width:120px;background:#111;color:#0f0;border:1px solid #555;border-radius:4px;padding:4px;">
+            <label style="display:flex;align-items:center;gap:6px;justify-content:center;color:#ccc;">
+              <input type="checkbox" data-id="${id}" class="emp-use-custom" ${isCustom ? 'checked' : ''}>
+              Custom requirement
+            </label>
+          </td>
+          <td style="padding:6px;border:1px solid #444;">
+            <select data-id="${id}" class="emp-req-type" style="width:120px;background:#111;color:#0f0;border:1px solid #555;border-radius:4px;padding:4px;" ${disabledAttr}>
               <option value="money" ${selectedMoney}>Money</option>
               <option value="item" ${selectedItem}>${SETTINGS.taxItemName}</option>
             </select>
           </td>
           <td style="padding:6px;border:1px solid #444;">
-            <input type="number" data-id="${id}" class="emp-req-amount" value="${req.amount}" style="width:120px;background:#111;color:#0f0;border:1px solid #555;border-radius:4px;padding:4px;">
+            <input type="number" data-id="${id}" class="emp-req-amount" value="${req.amount}" style="width:120px;background:#111;color:#0f0;border:1px solid #555;border-radius:4px;padding:4px;" ${disabledAttr}>
           </td>
         </tr>`;
     }).join('');
@@ -650,6 +674,7 @@
           <thead>
             <tr style="background:#2a2a2a;color:#fff;font-weight:bold;">
               <th style="padding:8px;border:1px solid #444;text-align:left;">Employee</th>
+              <th style="padding:8px;border:1px solid #444;">Custom Requirement</th>
               <th style="padding:8px;border:1px solid #444;">Type</th>
               <th style="padding:8px;border:1px solid #444;">Amount</th>
             </tr>
@@ -664,24 +689,65 @@
       </div>
     `;
 
+    employeeView.querySelectorAll('.emp-use-custom').forEach(box => {
+      box.addEventListener('change', () => {
+        const id = box.getAttribute('data-id');
+        const typeSelect = employeeView.querySelector(`.emp-req-type[data-id="${id}"]`);
+        const amountInput = employeeView.querySelector(`.emp-req-amount[data-id="${id}"]`);
+        if (box.checked) {
+          if (typeSelect) {
+            typeSelect.disabled = false;
+            if (typeSelect.dataset.lastValue) {
+              typeSelect.value = typeSelect.dataset.lastValue;
+            }
+          }
+          if (amountInput) {
+            amountInput.disabled = false;
+            if (amountInput.dataset.lastValue) {
+              amountInput.value = amountInput.dataset.lastValue;
+            }
+          }
+        } else {
+          if (typeSelect) {
+            typeSelect.dataset.lastValue = typeSelect.value;
+            typeSelect.value = 'money';
+            typeSelect.disabled = true;
+          }
+          if (amountInput) {
+            amountInput.dataset.lastValue = amountInput.value;
+            amountInput.value = SETTINGS.defaultMoneyTax;
+            amountInput.disabled = true;
+          }
+        }
+      });
+    });
+
     const saveButton = employeeView.querySelector('#saveEmployeeRequirements');
     if (saveButton) {
       saveButton.addEventListener('click', () => {
         const types = employeeView.querySelectorAll('.emp-req-type');
         const amounts = employeeView.querySelectorAll('.emp-req-amount');
-        types.forEach(select => {
-          const id = select.getAttribute('data-id');
-          const type = select.value === 'item' ? 'item' : 'money';
+        const toggles = employeeView.querySelectorAll('.emp-use-custom');
+        toggles.forEach(box => {
+          const id = box.getAttribute('data-id');
+          if (!box.checked) {
+            SETTINGS.memberRequirements[id] = { type: 'money', amount: SETTINGS.defaultMoneyTax, useDefault: true };
+            return;
+          }
+          const select = Array.from(types).find(sel => sel.getAttribute('data-id') === id);
           const amountInput = Array.from(amounts).find(input => input.getAttribute('data-id') === id);
+          const type = select && select.value === 'item' ? 'item' : 'money';
           const amountValue = amountInput ? parseInt(amountInput.value, 10) : NaN;
           const fallback = type === 'money' ? SETTINGS.defaultMoneyTax : SETTINGS.defaultItemTax;
           SETTINGS.memberRequirements[id] = {
             type,
-            amount: isNaN(amountValue) ? fallback : amountValue
+            amount: isNaN(amountValue) ? fallback : amountValue,
+            useDefault: false
           };
         });
         saveSettings(SETTINGS);
         renderOverview(lastWeeklyDataCache, lastEmployeesCache);
+        renderEmployeeMenu(employees);
         alert('Employee requirements saved.');
       });
     }
