@@ -553,20 +553,14 @@
       });
 
       const usesItemTracking = SETTINGS.defaultRequirementType === 'item' || Object.values(SETTINGS.memberRequirements).some(req => req && req.type === 'item');
-      let targetItemId;
-      if (usesItemTracking) {
-        const normalizedName = normalizeItemName(SETTINGS.taxItemName);
-        if (normalizedName === 'xanax') {
-          targetItemId = 206;
-        } else {
-          await ensureItemCatalog();
-          targetItemId = getItemIdForName(SETTINGS.taxItemName);
-        }
-      }
 
-      const logRes = await fetch(`https://api.torn.com/user/?selections=log&cat=85&key=${encodeURIComponent(SETTINGS.apiKey)}`);
-      const logData = await logRes.json();
-      const logs = logData.log || {};
+      const moneyRes = await fetch(`https://api.torn.com/user/?selections=log&log=4800,4810&key=${encodeURIComponent(SETTINGS.apiKey)}`);
+      const moneyData = await moneyRes.json();
+
+      const itemRes = await fetch(`https://api.torn.com/user/?selections=log&cat=85&key=${encodeURIComponent(SETTINGS.apiKey)}`);
+      const itemData = await itemRes.json();
+
+      const logs = { ...(moneyData && moneyData.log ? moneyData.log : {}), ...(itemData && itemData.log ? itemData.log : {}) };
       const employeeNameIndex = buildEmployeeNameIndex(employees);
 
       const weekMap = generateWeekMapFrom(SETTINGS.startYear, SETTINGS.startWeek);
@@ -593,16 +587,20 @@
 
         const logType = Number(log.log);
         const logCategory = Number(log.category);
-        if (!Number.isFinite(logType) && !Number.isFinite(logCategory)) {
-          continue;
-        }
 
-        if (isMoneyLog(logType)) {
-          weeklyData[weekKey][senderId].money += getMoneyAmountFromLog(log);
-        } else if (isItemLog(logCategory)) {
-          const qty = getItemQuantityFromLog(log, SETTINGS.taxItemName, targetItemId);
-          if (qty > 0) {
-            weeklyData[weekKey][senderId].items += qty;
+        if (logType === 4800 || logType === 4810) {
+          const amount = Number(log?.data?.money ?? log?.data?.amount ?? 0);
+          if (Number.isFinite(amount)) {
+            weeklyData[weekKey][senderId].money += amount;
+          }
+        } else if (usesItemTracking && logCategory === 85) {
+          const itemId = Number(log?.data?.item?.ID);
+          const itemName = (log?.data?.item?.name || '').toLowerCase();
+          if (itemId === 206 || itemName.includes('xanax')) {
+            const quantity = Number(log?.data?.quantity ?? 1);
+            if (Number.isFinite(quantity)) {
+              weeklyData[weekKey][senderId].items += quantity;
+            }
           }
         }
       }
