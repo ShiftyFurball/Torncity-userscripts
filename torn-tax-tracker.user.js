@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      6.3
+// @version      6.4
 // @description  Track weekly company tax from employees in Torn with Torn-styled table, draggable/resizable panel, reminders, overpayment tracking, totals row, and Test Mode.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -557,7 +557,7 @@
       const moneyRes = await fetch(`https://api.torn.com/user/?selections=log&log=4800,4810&key=${encodeURIComponent(SETTINGS.apiKey)}`);
       const moneyData = await moneyRes.json();
 
-      const itemRes = await fetch(`https://api.torn.com/user/?selections=log&cat=85&key=${encodeURIComponent(SETTINGS.apiKey)}`);
+      const itemRes = await fetch(`https://api.torn.com/user/?selections=log&log=85&key=${encodeURIComponent(SETTINGS.apiKey)}`);
       const itemData = await itemRes.json();
 
       const logs = { ...(moneyData && moneyData.log ? moneyData.log : {}), ...(itemData && itemData.log ? itemData.log : {}) };
