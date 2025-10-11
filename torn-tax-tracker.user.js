@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      6.2
+// @version      6.3
 // @description  Track weekly company tax from employees in Torn with Torn-styled table, draggable/resizable panel, reminders, overpayment tracking, totals row, and Test Mode.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -1342,6 +1342,38 @@
       { name: safe(log, 'data.received_item_name'), quantity: safe(log, 'data.received_item_quantity') ?? safe(log, 'data.received_item_qty') }
     ];
     fallbackPairs.forEach(pair => considerNameAndQuantity(pair.name, pair.quantity));
+
+    const textCandidates = [
+      safe(log, 'data.description'),
+      safe(log, 'data.details'),
+      safe(log, 'data.message'),
+      safe(log, 'data.note')
+    ].filter(Boolean);
+
+    if (textCandidates.length > 0) {
+      let textTotal = 0;
+      textCandidates.forEach(text => {
+        if (typeof text !== 'string') {
+          return;
+        }
+        const regex = new RegExp(`(\\d+)\\s*x?\\s*${escapeRegex(itemName)}`, 'gi');
+        let match;
+        while ((match = regex.exec(text)) !== null) {
+          const value = Number(match[1]);
+          if (Number.isFinite(value)) {
+            textTotal += value;
+          }
+        }
+      });
+
+      if (textTotal > 0) {
+        if (total === 0) {
+          total = textTotal;
+        } else if (textTotal > total) {
+          total = textTotal;
+        }
+      }
+    }
 
     if (total > 0) {
       return total;
