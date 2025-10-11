@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      6.4
+// @version      6.5
 // @description  Track weekly company tax from employees in Torn with Torn-styled table, draggable/resizable panel, reminders, overpayment tracking, totals row, and Test Mode.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -557,7 +557,7 @@
       const moneyRes = await fetch(`https://api.torn.com/user/?selections=log&log=4800,4810&key=${encodeURIComponent(SETTINGS.apiKey)}`);
       const moneyData = await moneyRes.json();
 
-      const itemRes = await fetch(`https://api.torn.com/user/?selections=log&log=85&key=${encodeURIComponent(SETTINGS.apiKey)}`);
+      const itemRes = await fetch(`https://api.torn.com/user/?selections=log&log=85,4102,4103&key=${encodeURIComponent(SETTINGS.apiKey)}`);
       const itemData = await itemRes.json();
 
       const logs = { ...(moneyData && moneyData.log ? moneyData.log : {}), ...(itemData && itemData.log ? itemData.log : {}) };
@@ -575,7 +575,16 @@
         if (year < SETTINGS.startYear || (year === SETTINGS.startYear && week < SETTINGS.startWeek)) continue;
         const weekKey = `${year}-W${week}`;
 
-        const senderId = findEmployeeIdFromLog(log, employees, employeeNameIndex);
+        const logType = Number(log.log);
+        const logCategory = Number(log.category);
+
+        let senderId = findEmployeeIdFromLog(log, employees, employeeNameIndex);
+        if (!senderId && usesItemTracking && (logType === 4102 || logType === 4103)) {
+          const directId = String(log?.data?.sender || log?.data?.receiver || "");
+          if (directId && employees[directId]) {
+            senderId = directId;
+          }
+        }
         if (!senderId) continue;
 
         if (!weeklyData[weekKey]) {
@@ -584,9 +593,6 @@
         if (!weeklyData[weekKey][senderId]) {
           weeklyData[weekKey][senderId] = { money: 0, items: 0 };
         }
-
-        const logType = Number(log.log);
-        const logCategory = Number(log.category);
 
         if (logType === 4800 || logType === 4810) {
           const amount = Number(log?.data?.money ?? log?.data?.amount ?? 0);
@@ -599,6 +605,16 @@
           const qty = getItemQuantityFromLog(log, targetName, targetId);
           if (qty > 0) {
             weeklyData[weekKey][senderId].items += qty;
+          }
+        } else if (usesItemTracking && (logType === 4102 || logType === 4103)) {
+          const directId = String(log?.data?.sender || log?.data?.receiver || "");
+          if (directId && directId === senderId) {
+            const items = Array.isArray(log?.data?.items) ? log.data.items : [];
+            items.forEach(it => {
+              if (it && Number(it.id) === 206 && Number.isFinite(Number(it.qty))) {
+                weeklyData[weekKey][senderId].items += Number(it.qty);
+              }
+            });
           }
         }
       }
