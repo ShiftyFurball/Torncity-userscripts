@@ -15,6 +15,8 @@
   'use strict';
 
   const STORAGE_KEY_SETTINGS = "torn_tax_settings_v4";
+  const STORAGE_KEY_ITEM_CATALOG = "torn_tax_item_catalog_v1";
+  const ITEM_CATALOG_MAX_AGE = 24 * 60 * 60 * 1000; // 24 hours
 
   const DEFAULT_SETTINGS = {
     startYear: new Date().getUTCFullYear(),
@@ -42,6 +44,140 @@
   }
   function saveSettings(s) {
     localStorage.setItem(STORAGE_KEY_SETTINGS, JSON.stringify(s));
+  }
+
+  function normalizeItemName(name) {
+    return typeof name === 'string' ? name.trim().toLowerCase() : '';
+  }
+
+  function normalizeItemId(id) {
+    if (id === undefined || id === null) {
+      return undefined;
+    }
+    const numeric = Number(id);
+    return Number.isFinite(numeric) ? numeric : undefined;
+  }
+
+  function loadItemCatalog() {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY_ITEM_CATALOG);
+      if (!saved) {
+        return { timestamp: 0, byName: {}, byId: {} };
+      }
+      const parsed = JSON.parse(saved);
+      if (!parsed || typeof parsed !== 'object') {
+        return { timestamp: 0, byName: {}, byId: {} };
+      }
+      const timestamp = Number(parsed.timestamp) || 0;
+      const byName = parsed.byName && typeof parsed.byName === 'object' ? parsed.byName : {};
+      const byId = parsed.byId && typeof parsed.byId === 'object' ? parsed.byId : {};
+      return { timestamp, byName, byId };
+    } catch (err) {
+      console.warn('Failed to load item catalog', err);
+      return { timestamp: 0, byName: {}, byId: {} };
+    }
+  }
+
+  function saveItemCatalog(catalog) {
+    try {
+      localStorage.setItem(STORAGE_KEY_ITEM_CATALOG, JSON.stringify(catalog));
+    } catch (err) {
+      console.warn('Failed to save item catalog', err);
+    }
+  }
+
+  function ensureCatalogShape(catalog) {
+    if (!catalog || typeof catalog !== 'object') {
+      return { timestamp: 0, byName: {}, byId: {} };
+    }
+    if (!catalog.byName || typeof catalog.byName !== 'object') {
+      catalog.byName = {};
+    }
+    if (!catalog.byId || typeof catalog.byId !== 'object') {
+      catalog.byId = {};
+    }
+    if (!Number.isFinite(Number(catalog.timestamp))) {
+      catalog.timestamp = 0;
+    }
+    return catalog;
+  }
+
+  let ITEM_CATALOG = ensureCatalogShape(loadItemCatalog());
+
+  function recordItemMapping(byName, key, info) {
+    if (!key || byName[key]) {
+      return;
+    }
+    byName[key] = info;
+  }
+
+  async function ensureItemCatalog() {
+    const now = Date.now();
+    if (ITEM_CATALOG && ITEM_CATALOG.timestamp && (now - ITEM_CATALOG.timestamp) < ITEM_CATALOG_MAX_AGE && Object.keys(ITEM_CATALOG.byName).length > 0) {
+      return ITEM_CATALOG;
+    }
+    if (!SETTINGS.apiKey) {
+      return ITEM_CATALOG;
+    }
+    try {
+      const res = await fetch(`https://api.torn.com/torn/?selections=items&key=${encodeURIComponent(SETTINGS.apiKey)}`);
+      const data = await res.json();
+      if (!data || data.error || !data.items || typeof data.items !== 'object') {
+        if (!ITEM_CATALOG.timestamp || (now - ITEM_CATALOG.timestamp) >= ITEM_CATALOG_MAX_AGE) {
+          ITEM_CATALOG.timestamp = now;
+          saveItemCatalog(ITEM_CATALOG);
+        }
+        return ITEM_CATALOG;
+      }
+      const byName = {};
+      const byId = {};
+      Object.keys(data.items).forEach(id => {
+        const item = data.items[id];
+        const numericId = normalizeItemId(id);
+        if (!item || numericId === undefined) {
+          return;
+        }
+        const baseNames = [item.name, item.item, item.itemname, item.itemName, item.title, item.plural];
+        const primaryName = baseNames.find(name => typeof name === 'string' && name.trim());
+        const candidateNames = baseNames.filter(name => typeof name === 'string');
+        if (Array.isArray(item.aliases)) {
+          item.aliases.forEach(alias => {
+            if (typeof alias === 'string') {
+              candidateNames.push(alias);
+            }
+          });
+        }
+        candidateNames.forEach(candidate => {
+          const key = normalizeItemName(candidate);
+          if (!key) {
+            return;
+          }
+          recordItemMapping(byName, key, { id: numericId, name: primaryName || candidate });
+        });
+        byId[numericId] = { name: primaryName || '' };
+      });
+      ITEM_CATALOG = ensureCatalogShape({ timestamp: now, byName, byId });
+      saveItemCatalog(ITEM_CATALOG);
+    } catch (err) {
+      console.warn('Failed to fetch item catalog', err);
+    }
+    return ITEM_CATALOG;
+  }
+
+  function getItemIdForName(name) {
+    if (!ITEM_CATALOG || !ITEM_CATALOG.byName) {
+      return undefined;
+    }
+    const key = normalizeItemName(name);
+    if (!key) {
+      return undefined;
+    }
+    const entry = ITEM_CATALOG.byName[key];
+    if (!entry || entry.id === undefined) {
+      return undefined;
+    }
+    const numeric = normalizeItemId(entry.id);
+    return numeric;
   }
 
   let SETTINGS = loadSettings();
@@ -416,6 +552,13 @@
         }
       });
 
+      const usesItemTracking = SETTINGS.defaultRequirementType === 'item' || Object.values(SETTINGS.memberRequirements).some(req => req && req.type === 'item');
+      let targetItemId;
+      if (usesItemTracking) {
+        await ensureItemCatalog();
+        targetItemId = getItemIdForName(SETTINGS.taxItemName);
+      }
+
       const relevantLogs = [85, 4800, 4810, 4850, 4860, 4870, 4880];
       const logRes = await fetch(`https://api.torn.com/user/?selections=log&log=${relevantLogs.join(',')}&key=${encodeURIComponent(SETTINGS.apiKey)}`);
       const logData = await logRes.json();
@@ -453,7 +596,7 @@
         if (isMoneyLog(logType)) {
           weeklyData[weekKey][senderId].money += getMoneyAmountFromLog(log);
         } else if (isItemLog(logType, logCategory)) {
-          const qty = getItemQuantityFromLog(log, SETTINGS.taxItemName);
+          const qty = getItemQuantityFromLog(log, SETTINGS.taxItemName, targetItemId);
           if (qty > 0) {
             weeklyData[weekKey][senderId].items += qty;
           }
@@ -1013,11 +1156,12 @@
     return undefined;
   }
 
-  function searchDataForItem(data, targetName) {
+  function searchDataForItem(data, targetName, targetId) {
     if (!data || !targetName) {
       return 0;
     }
     const lowerTarget = targetName.toLowerCase();
+    const normalizedTargetId = normalizeItemId(targetId);
     const visited = new Set();
     let subtotal = 0;
 
@@ -1043,9 +1187,14 @@
 
         const exactMatch = names.find(n => n.trim().toLowerCase() === lowerTarget);
         const looseMatch = exactMatch ? exactMatch : names.find(n => n.toLowerCase().includes(lowerTarget));
+        const idCandidates = [value.id, value.ID, value.item_id, value.itemId, value.itemID];
+        const idMatch = normalizedTargetId !== undefined && idCandidates.some(candidate => {
+          const numeric = normalizeItemId(candidate);
+          return numeric !== undefined && numeric === normalizedTargetId;
+        });
 
         let matched = false;
-        if (exactMatch || looseMatch) {
+        if (exactMatch || looseMatch || idMatch) {
           const quantityFields = [
             'quantity', 'qty', 'amount', 'q', 'count', 'number', 'total', 'item_quantity',
             'quantity_sent', 'quantity_received', 'qty_sent', 'qty_received',
@@ -1061,7 +1210,7 @@
               }
             }
           }
-          if (quantity === undefined) {
+          if (quantity === undefined && (exactMatch || looseMatch)) {
             const textCandidates = names.slice();
             const textFields = [value.note, value.message, value.extra, value.summary];
             textFields.forEach(field => {
@@ -1110,7 +1259,7 @@
     return subtotal;
   }
 
-  function getItemQuantityFromLog(log, itemName) {
+  function getItemQuantityFromLog(log, itemName, itemId) {
     if (!itemName) {
       return 0;
     }
@@ -1118,6 +1267,8 @@
     if (!targetName) {
       return 0;
     }
+
+    const normalizedTargetId = normalizeItemId(itemId);
 
     let total = 0;
 
@@ -1128,7 +1279,10 @@
       const names = [entry.name, entry.item, entry.itemname, entry.itemName, entry.title];
       const quantities = [entry.quantity, entry.qty, entry.amount, entry.q, entry.count];
       const matchedName = names.find(n => typeof n === 'string' && n.trim().toLowerCase() === targetName);
-      if (!matchedName) {
+      const idCandidates = [entry.id, entry.ID, entry.item_id, entry.itemId, entry.itemID];
+      const entryId = idCandidates.map(normalizeItemId).find(id => id !== undefined);
+      const matchesId = normalizedTargetId !== undefined && entryId !== undefined && entryId === normalizedTargetId;
+      if (!matchedName && !matchesId) {
         return;
       }
       const quantity = quantities.map(extractQuantity).find(q => q !== undefined);
@@ -1196,7 +1350,7 @@
       return total;
     }
 
-    const additional = searchDataForItem(safe(log, 'data'), targetName);
+    const additional = searchDataForItem(safe(log, 'data'), targetName, normalizedTargetId);
     return additional > 0 ? additional : 0;
   }
 
