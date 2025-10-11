@@ -555,12 +555,16 @@
       const usesItemTracking = SETTINGS.defaultRequirementType === 'item' || Object.values(SETTINGS.memberRequirements).some(req => req && req.type === 'item');
       let targetItemId;
       if (usesItemTracking) {
-        await ensureItemCatalog();
-        targetItemId = getItemIdForName(SETTINGS.taxItemName);
+        const normalizedName = normalizeItemName(SETTINGS.taxItemName);
+        if (normalizedName === 'xanax') {
+          targetItemId = 206;
+        } else {
+          await ensureItemCatalog();
+          targetItemId = getItemIdForName(SETTINGS.taxItemName);
+        }
       }
 
-      const relevantLogs = [85, 4800, 4810, 4850, 4860, 4870, 4880];
-      const logRes = await fetch(`https://api.torn.com/user/?selections=log&log=${relevantLogs.join(',')}&key=${encodeURIComponent(SETTINGS.apiKey)}`);
+      const logRes = await fetch(`https://api.torn.com/user/?selections=log&cat=85&key=${encodeURIComponent(SETTINGS.apiKey)}`);
       const logData = await logRes.json();
       const logs = logData.log || {};
       const employeeNameIndex = buildEmployeeNameIndex(employees);
@@ -595,7 +599,7 @@
 
         if (isMoneyLog(logType)) {
           weeklyData[weekKey][senderId].money += getMoneyAmountFromLog(log);
-        } else if (isItemLog(logType, logCategory)) {
+        } else if (isItemLog(logCategory)) {
           const qty = getItemQuantityFromLog(log, SETTINGS.taxItemName, targetItemId);
           if (qty > 0) {
             weeklyData[weekKey][senderId].items += qty;
@@ -1091,10 +1095,7 @@
     return Number.isFinite(logType) && (logType === 4800 || logType === 4810);
   }
 
-  function isItemLog(logType, logCategory) {
-    if (Number.isFinite(logType) && (logType === 85 || logType === 4850 || logType === 4860 || logType === 4870 || logType === 4880)) {
-      return true;
-    }
+  function isItemLog(logCategory) {
     return Number.isFinite(logCategory) && logCategory === 85;
   }
 
