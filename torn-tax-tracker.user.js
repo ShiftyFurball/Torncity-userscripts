@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      5.3
+// @version      5.4
 // @description  Track weekly company tax from employees in Torn with Torn-styled table, draggable/resizable panel, reminders, overpayment tracking, totals row, and Test Mode.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -416,7 +416,8 @@
         }
       });
 
-      const logRes = await fetch(`https://api.torn.com/user/?selections=log&log=4800,4810,4870,4880&key=${encodeURIComponent(SETTINGS.apiKey)}`);
+      const relevantLogs = [4800, 4810, 4850, 4860, 4870, 4880];
+      const logRes = await fetch(`https://api.torn.com/user/?selections=log&log=${relevantLogs.join(',')}&key=${encodeURIComponent(SETTINGS.apiKey)}`);
       const logData = await logRes.json();
       const logs = logData.log || {};
 
@@ -432,8 +433,7 @@
         if (year < SETTINGS.startYear || (year === SETTINGS.startYear && week < SETTINGS.startWeek)) continue;
         const weekKey = `${year}-W${week}`;
 
-        const candidates = [safe(log, "data.sender"), safe(log, "data.user"), safe(log, "data.initiator")].filter(Boolean);
-        const senderId = candidates.find(val => employees[val]);
+        const senderId = findEmployeeIdFromLog(log, employees);
         if (!senderId) continue;
 
         if (!weeklyData[weekKey]) {
@@ -443,27 +443,11 @@
           weeklyData[weekKey][senderId] = { money: 0, items: 0 };
         }
 
-        if (log.log === 4810) {
-          weeklyData[weekKey][senderId].money += safe(log, "data.money") || 0;
-        } else if (log.log === 4870 || log.log === 4880) {
-          const itemName = SETTINGS.taxItemName;
-          const single = safe(log, "data.item");
-          if (single && single.name === itemName) {
-            weeklyData[weekKey][senderId].items += single.quantity || 0;
-            continue;
-          }
-          const arr = safe(log, "data.items");
-          if (Array.isArray(arr)) {
-            arr.forEach(it => {
-              if (it && it.name === itemName) {
-                weeklyData[weekKey][senderId].items += it.quantity || 0;
-              }
-            });
-            continue;
-          }
-          const nm = safe(log, "data.name");
-          const qty = safe(log, "data.quantity") || safe(log, "data.qty");
-          if (nm === itemName && qty) {
+        if (isMoneyLog(log.log)) {
+          weeklyData[weekKey][senderId].money += getMoneyAmountFromLog(log);
+        } else if (isItemLog(log.log)) {
+          const qty = getItemQuantityFromLog(log, SETTINGS.taxItemName);
+          if (qty > 0) {
             weeklyData[weekKey][senderId].items += qty;
           }
         }
@@ -805,6 +789,155 @@
 
   function safe(obj, path) {
     return path.split('.').reduce((acc, key) => (acc && acc[key] !== undefined ? acc[key] : undefined), obj);
+  }
+
+  function normalizeIdCandidate(candidate) {
+    if (candidate === null || candidate === undefined) {
+      return undefined;
+    }
+    if (typeof candidate === 'number' || typeof candidate === 'string') {
+      const str = String(candidate);
+      return str && str !== '0' ? str : undefined;
+    }
+    if (typeof candidate === 'object') {
+      const fields = ['player_id', 'playerId', 'id', 'ID', 'user_id', 'userid', 'uid'];
+      for (const field of fields) {
+        if (candidate[field] !== undefined) {
+          const str = String(candidate[field]);
+          if (str && str !== '0') {
+            return str;
+          }
+        }
+      }
+    }
+    return undefined;
+  }
+
+  function findEmployeeIdFromLog(log, employees) {
+    const possibleFields = [
+      'data.sender_id', 'data.sender', 'data.sender.player_id', 'data.sender.user_id', 'data.sender.id',
+      'data.initiator_id', 'data.initiator', 'data.initiator.player_id', 'data.initiator.user_id', 'data.initiator.id',
+      'data.user_id', 'data.user', 'data.user.player_id', 'data.user.user_id', 'data.user.id',
+      'data.owner_id', 'data.owner', 'data.owner.player_id',
+      'data.from_id', 'data.from', 'data.from.player_id',
+      'data.giver_id', 'data.giver', 'data.giver.player_id',
+      'data.member_id', 'data.member', 'data.member.player_id',
+      'data.target_id', 'data.target', 'data.target.player_id'
+    ];
+
+    for (const path of possibleFields) {
+      const candidate = normalizeIdCandidate(safe(log, path));
+      if (candidate && employees[candidate]) {
+        return candidate;
+      }
+    }
+    return undefined;
+  }
+
+  function isMoneyLog(logType) {
+    return logType === 4800 || logType === 4810;
+  }
+
+  function isItemLog(logType) {
+    return logType === 4850 || logType === 4860 || logType === 4870 || logType === 4880;
+  }
+
+  function getMoneyAmountFromLog(log) {
+    const fields = ['data.money', 'data.amount', 'data.total'];
+    for (const path of fields) {
+      const value = safe(log, path);
+      if (value !== undefined) {
+        const num = Number(value);
+        if (Number.isFinite(num)) {
+          return num;
+        }
+      }
+    }
+    return 0;
+  }
+
+  function extractQuantity(value) {
+    if (value === undefined || value === null) {
+      return undefined;
+    }
+    if (typeof value === 'number') {
+      return Number.isFinite(value) ? value : undefined;
+    }
+    const num = Number(value);
+    return Number.isFinite(num) ? num : undefined;
+  }
+
+  function getItemQuantityFromLog(log, itemName) {
+    if (!itemName) {
+      return 0;
+    }
+    const targetName = String(itemName).trim().toLowerCase();
+    if (!targetName) {
+      return 0;
+    }
+
+    let total = 0;
+
+    const considerEntry = entry => {
+      if (!entry || typeof entry !== 'object') {
+        return;
+      }
+      const names = [entry.name, entry.item, entry.itemname, entry.itemName, entry.title];
+      const quantities = [entry.quantity, entry.qty, entry.amount, entry.q, entry.count];
+      const matchedName = names.find(n => typeof n === 'string' && n.trim().toLowerCase() === targetName);
+      if (!matchedName) {
+        return;
+      }
+      const quantity = quantities.map(extractQuantity).find(q => q !== undefined);
+      const value = quantity !== undefined ? quantity : 1;
+      if (value > 0) {
+        total += value;
+      }
+    };
+
+    const considerNameAndQuantity = (name, quantity) => {
+      if (typeof name !== 'string') {
+        return;
+      }
+      if (name.trim().toLowerCase() !== targetName) {
+        return;
+      }
+      const qty = extractQuantity(quantity);
+      const value = qty !== undefined ? qty : 1;
+      if (value > 0) {
+        total += value;
+      }
+    };
+
+    const singleCandidates = [
+      safe(log, 'data.item'),
+      safe(log, 'data.sent_item'),
+      safe(log, 'data.target_item')
+    ];
+    singleCandidates.forEach(considerEntry);
+
+    const arrayCandidates = [
+      safe(log, 'data.items'),
+      safe(log, 'data.sent_items'),
+      safe(log, 'data.item_list'),
+      safe(log, 'data.gifts')
+    ];
+    arrayCandidates.forEach(collection => {
+      if (Array.isArray(collection)) {
+        collection.forEach(considerEntry);
+      } else if (collection && typeof collection === 'object') {
+        Object.values(collection).forEach(considerEntry);
+      }
+    });
+
+    const fallbackPairs = [
+      { name: safe(log, 'data.name'), quantity: safe(log, 'data.quantity') ?? safe(log, 'data.qty') },
+      { name: safe(log, 'data.itemname'), quantity: safe(log, 'data.amount') },
+      { name: safe(log, 'data.item_name'), quantity: safe(log, 'data.item_quantity') }
+    ];
+    fallbackPairs.forEach(pair => considerNameAndQuantity(pair.name, pair.quantity));
+
+    return total;
   }
 
   function generateWeekMapFrom(startYear, startWeek) {
