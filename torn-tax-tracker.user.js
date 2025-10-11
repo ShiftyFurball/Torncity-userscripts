@@ -972,8 +972,138 @@
     if (typeof value === 'number') {
       return Number.isFinite(value) ? value : undefined;
     }
+    if (typeof value === 'string') {
+      const match = value.match(/-?\d+(?:\.\d+)?/);
+      if (match) {
+        const num = Number(match[0]);
+        return Number.isFinite(num) ? num : undefined;
+      }
+      return undefined;
+    }
     const num = Number(value);
     return Number.isFinite(num) ? num : undefined;
+  }
+
+  function escapeRegex(str) {
+    return String(str).replace(/[[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
+  }
+
+  function parseQuantityFromText(text, targetName) {
+    if (typeof text !== 'string' || !targetName) {
+      return undefined;
+    }
+    const escaped = escapeRegex(targetName);
+    const regexes = [
+      new RegExp(`(\\d+(?:\\.\\d+)?)\\s*(?:x\\s*)?${escaped}`, 'i'),
+      new RegExp(`${escaped}\\s*(?:x\\s*)?(\\d+(?:\\.\\d+)?)`, 'i')
+    ];
+    for (const regex of regexes) {
+      const match = text.match(regex);
+      if (match) {
+        const quantity = Number(match[1]);
+        if (Number.isFinite(quantity)) {
+          return quantity;
+        }
+      }
+    }
+    return undefined;
+  }
+
+  function searchDataForItem(data, targetName) {
+    if (!data || !targetName) {
+      return 0;
+    }
+    const lowerTarget = targetName.toLowerCase();
+    const visited = new Set();
+    let subtotal = 0;
+
+    function traverse(value) {
+      if (!value) {
+        return;
+      }
+      if (Array.isArray(value)) {
+        value.forEach(traverse);
+        return;
+      }
+      if (typeof value === 'object') {
+        if (visited.has(value)) {
+          return;
+        }
+        visited.add(value);
+
+        const names = [
+          value.name, value.item, value.itemname, value.itemName, value.title,
+          value.text, value.description, value.details,
+          value.sent, value.received, value.note, value.message, value.summary
+        ].filter(v => typeof v === 'string');
+
+        const exactMatch = names.find(n => n.trim().toLowerCase() === lowerTarget);
+        const looseMatch = exactMatch ? exactMatch : names.find(n => n.toLowerCase().includes(lowerTarget));
+
+        let matched = false;
+        if (exactMatch || looseMatch) {
+          const quantityFields = [
+            'quantity', 'qty', 'amount', 'q', 'count', 'number', 'total', 'item_quantity',
+            'quantity_sent', 'quantity_received', 'qty_sent', 'qty_received',
+            'stack', 'stack_size', 'size'
+          ];
+          let quantity;
+          for (const field of quantityFields) {
+            if (value[field] !== undefined) {
+              const extracted = extractQuantity(value[field]);
+              if (extracted !== undefined) {
+                quantity = extracted;
+                break;
+              }
+            }
+          }
+          if (quantity === undefined) {
+            const textCandidates = names.slice();
+            const textFields = [value.note, value.message, value.extra, value.summary];
+            textFields.forEach(field => {
+              if (typeof field === 'string') {
+                textCandidates.push(field);
+              }
+            });
+            for (const text of textCandidates) {
+              const parsed = parseQuantityFromText(text, targetName);
+              if (parsed !== undefined) {
+                quantity = parsed;
+                break;
+              }
+            }
+          }
+          if (quantity === undefined) {
+            quantity = 1;
+          }
+          if (quantity > 0) {
+            subtotal += quantity;
+            matched = true;
+          }
+        }
+
+        Object.values(value).forEach(child => {
+          if (child && (typeof child === 'object' || Array.isArray(child))) {
+            traverse(child);
+          } else if (!matched && typeof child === 'string' && child.toLowerCase().includes(lowerTarget)) {
+            const parsed = parseQuantityFromText(child, targetName);
+            if (parsed !== undefined && parsed > 0) {
+              subtotal += parsed;
+            }
+          }
+        });
+        return;
+      }
+      if (typeof value === 'string' && value.toLowerCase().includes(lowerTarget)) {
+        const parsed = parseQuantityFromText(value, targetName);
+        if (parsed !== undefined && parsed > 0) {
+          subtotal += parsed;
+        }
+      }
+    }
+
+    traverse(data);
+    return subtotal;
   }
 
   function getItemQuantityFromLog(log, itemName) {
@@ -1021,7 +1151,11 @@
     const singleCandidates = [
       safe(log, 'data.item'),
       safe(log, 'data.sent_item'),
-      safe(log, 'data.target_item')
+      safe(log, 'data.target_item'),
+      safe(log, 'data.received_item'),
+      safe(log, 'data.sent'),
+      safe(log, 'data.received'),
+      safe(log, 'data.gift')
     ];
     singleCandidates.forEach(considerEntry);
 
@@ -1029,7 +1163,12 @@
       safe(log, 'data.items'),
       safe(log, 'data.sent_items'),
       safe(log, 'data.item_list'),
-      safe(log, 'data.gifts')
+      safe(log, 'data.gifts'),
+      safe(log, 'data.received_items'),
+      safe(log, 'data.sentItems'),
+      safe(log, 'data.receivedItems'),
+      safe(log, 'data.itemlist'),
+      safe(log, 'data.inventory')
     ];
     arrayCandidates.forEach(collection => {
       if (Array.isArray(collection)) {
@@ -1042,11 +1181,19 @@
     const fallbackPairs = [
       { name: safe(log, 'data.name'), quantity: safe(log, 'data.quantity') ?? safe(log, 'data.qty') },
       { name: safe(log, 'data.itemname'), quantity: safe(log, 'data.amount') },
-      { name: safe(log, 'data.item_name'), quantity: safe(log, 'data.item_quantity') }
+      { name: safe(log, 'data.item_name'), quantity: safe(log, 'data.item_quantity') },
+      { name: safe(log, 'data.itemName'), quantity: safe(log, 'data.itemQuantity') },
+      { name: safe(log, 'data.sent_item_name'), quantity: safe(log, 'data.sent_item_quantity') ?? safe(log, 'data.sent_item_qty') },
+      { name: safe(log, 'data.received_item_name'), quantity: safe(log, 'data.received_item_quantity') ?? safe(log, 'data.received_item_qty') }
     ];
     fallbackPairs.forEach(pair => considerNameAndQuantity(pair.name, pair.quantity));
 
-    return total;
+    if (total > 0) {
+      return total;
+    }
+
+    const additional = searchDataForItem(safe(log, 'data'), targetName);
+    return additional > 0 ? additional : 0;
   }
 
   function generateWeekMapFrom(startYear, startWeek) {
