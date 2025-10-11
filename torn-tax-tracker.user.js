@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      6.1
+// @version      6.2
 // @description  Track weekly company tax from employees in Torn with Torn-styled table, draggable/resizable panel, reminders, overpayment tracking, totals row, and Test Mode.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -594,13 +594,11 @@
             weeklyData[weekKey][senderId].money += amount;
           }
         } else if (usesItemTracking && logCategory === 85) {
-          const itemId = Number(log?.data?.item_id);
-          const itemName = (log?.data?.item_name || '').toLowerCase();
-          if (itemId === 206 || itemName.includes('xanax')) {
-            const quantity = Number(log?.data?.quantity ?? 1);
-            if (Number.isFinite(quantity)) {
-              weeklyData[weekKey][senderId].items += quantity;
-            }
+          const targetId = 206; // Xanax
+          const targetName = SETTINGS.taxItemName || "Xanax";
+          const qty = getItemQuantityFromLog(log, targetName, targetId);
+          if (qty > 0) {
+            weeklyData[weekKey][senderId].items += qty;
           }
         }
       }
