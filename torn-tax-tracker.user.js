@@ -594,8 +594,8 @@
             weeklyData[weekKey][senderId].money += amount;
           }
         } else if (usesItemTracking && logCategory === 85) {
-          const itemId = Number(log?.data?.item?.ID);
-          const itemName = (log?.data?.item?.name || '').toLowerCase();
+          const itemId = Number(log?.data?.item_id);
+          const itemName = (log?.data?.item_name || '').toLowerCase();
           if (itemId === 206 || itemName.includes('xanax')) {
             const quantity = Number(log?.data?.quantity ?? 1);
             if (Number.isFinite(quantity)) {
