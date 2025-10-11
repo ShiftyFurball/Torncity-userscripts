@@ -420,6 +420,7 @@
       const logRes = await fetch(`https://api.torn.com/user/?selections=log&log=${relevantLogs.join(',')}&key=${encodeURIComponent(SETTINGS.apiKey)}`);
       const logData = await logRes.json();
       const logs = logData.log || {};
+      const employeeNameIndex = buildEmployeeNameIndex(employees);
 
       const weekMap = generateWeekMapFrom(SETTINGS.startYear, SETTINGS.startWeek);
       Object.keys(weekMap).forEach(key => {
@@ -433,7 +434,7 @@
         if (year < SETTINGS.startYear || (year === SETTINGS.startYear && week < SETTINGS.startWeek)) continue;
         const weekKey = `${year}-W${week}`;
 
-        const senderId = findEmployeeIdFromLog(log, employees);
+        const senderId = findEmployeeIdFromLog(log, employees, employeeNameIndex);
         if (!senderId) continue;
 
         if (!weeklyData[weekKey]) {
@@ -443,9 +444,14 @@
           weeklyData[weekKey][senderId] = { money: 0, items: 0 };
         }
 
-        if (isMoneyLog(log.log)) {
+        const logType = Number(log.log);
+        if (!Number.isFinite(logType)) {
+          continue;
+        }
+
+        if (isMoneyLog(logType)) {
           weeklyData[weekKey][senderId].money += getMoneyAmountFromLog(log);
-        } else if (isItemLog(log.log)) {
+        } else if (isItemLog(logType)) {
           const qty = getItemQuantityFromLog(log, SETTINGS.taxItemName);
           if (qty > 0) {
             weeklyData[weekKey][senderId].items += qty;
@@ -795,17 +801,34 @@
     if (candidate === null || candidate === undefined) {
       return undefined;
     }
-    if (typeof candidate === 'number' || typeof candidate === 'string') {
-      const str = String(candidate);
-      return str && str !== '0' ? str : undefined;
+    if (typeof candidate === 'number') {
+      const num = Number(candidate);
+      if (!Number.isFinite(num) || num === 0) {
+        return undefined;
+      }
+      return String(num);
+    }
+    if (typeof candidate === 'string') {
+      const trimmed = candidate.trim();
+      if (!trimmed) {
+        return undefined;
+      }
+      const bracketMatch = trimmed.match(/\[(\d+)\]/);
+      if (bracketMatch && bracketMatch[1] !== '0') {
+        return bracketMatch[1];
+      }
+      if (/^\d+$/.test(trimmed) && trimmed !== '0') {
+        return trimmed;
+      }
+      return undefined;
     }
     if (typeof candidate === 'object') {
       const fields = ['player_id', 'playerId', 'id', 'ID', 'user_id', 'userid', 'uid'];
       for (const field of fields) {
         if (candidate[field] !== undefined) {
-          const str = String(candidate[field]);
-          if (str && str !== '0') {
-            return str;
+          const normalized = normalizeIdCandidate(candidate[field]);
+          if (normalized) {
+            return normalized;
           }
         }
       }
@@ -813,7 +836,68 @@
     return undefined;
   }
 
-  function findEmployeeIdFromLog(log, employees) {
+  function buildEmployeeNameIndex(employees) {
+    const index = {};
+    Object.entries(employees || {}).forEach(([id, name]) => {
+      if (typeof name !== 'string') {
+        return;
+      }
+      const normalized = name.trim().toLowerCase();
+      if (!normalized) {
+        return;
+      }
+      if (!index[normalized]) {
+        index[normalized] = [];
+      }
+      index[normalized].push(id);
+    });
+    return index;
+  }
+
+  function resolveEmployeeIdByNameCandidate(candidate, employees, nameIndex) {
+    if (candidate === null || candidate === undefined) {
+      return undefined;
+    }
+    if (typeof candidate === 'string') {
+      const trimmed = candidate.trim();
+      if (!trimmed) {
+        return undefined;
+      }
+      const bracketMatch = trimmed.match(/\[(\d+)\]/);
+      if (bracketMatch && employees[bracketMatch[1]]) {
+        return bracketMatch[1];
+      }
+      const normalized = trimmed.toLowerCase();
+      const matches = nameIndex[normalized];
+      if (matches && matches.length > 0) {
+        return matches[0];
+      }
+      return undefined;
+    }
+    if (typeof candidate === 'object') {
+      const directId = normalizeIdCandidate(candidate);
+      if (directId && employees[directId]) {
+        return directId;
+      }
+      const nameFields = [
+        'name', 'player_name', 'playerName', 'username',
+        'user_name', 'owner_name', 'target_name', 'member_name',
+        'giver_name', 'from_name', 'employee_name', 'recipient_name',
+        'sender_name', 'initiator_name'
+      ];
+      for (const field of nameFields) {
+        if (candidate[field]) {
+          const match = resolveEmployeeIdByNameCandidate(candidate[field], employees, nameIndex);
+          if (match) {
+            return match;
+          }
+        }
+      }
+    }
+    return undefined;
+  }
+
+  function findEmployeeIdFromLog(log, employees, nameIndex) {
     const possibleFields = [
       'data.sender_id', 'data.sender', 'data.sender.player_id', 'data.sender.user_id', 'data.sender.id',
       'data.initiator_id', 'data.initiator', 'data.initiator.player_id', 'data.initiator.user_id', 'data.initiator.id',
@@ -827,6 +911,31 @@
 
     for (const path of possibleFields) {
       const candidate = normalizeIdCandidate(safe(log, path));
+      if (candidate && employees[candidate]) {
+        return candidate;
+      }
+    }
+
+    if (!nameIndex) {
+      nameIndex = buildEmployeeNameIndex(employees);
+    }
+
+    const possibleNameFields = [
+      'data.sender_name', 'data.sender.name', 'data.senderName', 'data.sender',
+      'data.initiator_name', 'data.initiator.name', 'data.initiator',
+      'data.user_name', 'data.user.name', 'data.userName', 'data.user',
+      'data.owner_name', 'data.owner.name', 'data.owner',
+      'data.from_name', 'data.from.name', 'data.from',
+      'data.giver_name', 'data.giver.name', 'data.giver',
+      'data.member_name', 'data.member.name', 'data.member',
+      'data.target_name', 'data.target.name', 'data.target',
+      'data.employee_name', 'data.employee.name', 'data.employee',
+      'data.recipient_name', 'data.recipient.name', 'data.recipient',
+      'data.name'
+    ];
+
+    for (const path of possibleNameFields) {
+      const candidate = resolveEmployeeIdByNameCandidate(safe(log, path), employees, nameIndex);
       if (candidate && employees[candidate]) {
         return candidate;
       }
