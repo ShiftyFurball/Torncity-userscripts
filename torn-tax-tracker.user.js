@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      5.6
+// @version      5.7
 // @description  Track weekly company tax from employees in Torn with Torn-styled table, draggable/resizable panel, reminders, overpayment tracking, totals row, and Test Mode.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -416,7 +416,7 @@
         }
       });
 
-      const relevantLogs = [4800, 4810, 4850, 4860, 4870, 4880];
+      const relevantLogs = [85, 4800, 4810, 4850, 4860, 4870, 4880];
       const logRes = await fetch(`https://api.torn.com/user/?selections=log&log=${relevantLogs.join(',')}&key=${encodeURIComponent(SETTINGS.apiKey)}`);
       const logData = await logRes.json();
       const logs = logData.log || {};
@@ -445,13 +445,14 @@
         }
 
         const logType = Number(log.log);
-        if (!Number.isFinite(logType)) {
+        const logCategory = Number(log.category);
+        if (!Number.isFinite(logType) && !Number.isFinite(logCategory)) {
           continue;
         }
 
         if (isMoneyLog(logType)) {
           weeklyData[weekKey][senderId].money += getMoneyAmountFromLog(log);
-        } else if (isItemLog(logType)) {
+        } else if (isItemLog(logType, logCategory)) {
           const qty = getItemQuantityFromLog(log, SETTINGS.taxItemName);
           if (qty > 0) {
             weeklyData[weekKey][senderId].items += qty;
@@ -944,11 +945,14 @@
   }
 
   function isMoneyLog(logType) {
-    return logType === 4800 || logType === 4810;
+    return Number.isFinite(logType) && (logType === 4800 || logType === 4810);
   }
 
-  function isItemLog(logType) {
-    return logType === 4850 || logType === 4860 || logType === 4870 || logType === 4880;
+  function isItemLog(logType, logCategory) {
+    if (Number.isFinite(logType) && (logType === 85 || logType === 4850 || logType === 4860 || logType === 4870 || logType === 4880)) {
+      return true;
+    }
+    return Number.isFinite(logCategory) && logCategory === 85;
   }
 
   function getMoneyAmountFromLog(log) {
