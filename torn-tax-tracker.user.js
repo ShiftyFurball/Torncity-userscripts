@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      6.8
+// @version      6.9
 // @description  Track weekly company tax from employees in Torn with Torn-styled table, draggable/resizable panel, reminders, overpayment tracking, totals row, and Test Mode.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -720,45 +720,6 @@
     return getWeekNumber(joinDate);
   }
 
-  function getEffectiveStartWeek(allWeeks, hireYear, hireWeek) {
-    if (!Array.isArray(allWeeks) || allWeeks.length === 0) {
-      return -1;
-    }
-
-    const startKey = `${SETTINGS.startYear}-W${SETTINGS.startWeek}`;
-    const hireValid = Number.isFinite(hireYear) && Number.isFinite(hireWeek);
-    const hireKey = hireValid ? `${hireYear}-W${hireWeek}` : null;
-
-    const startIndex = allWeeks.indexOf(startKey);
-    if (startIndex === -1) {
-      return -1;
-    }
-
-    const hireIndex = hireKey ? allWeeks.indexOf(hireKey) : -1;
-    if (hireIndex === -1) {
-      if (!hireValid) {
-        return startIndex;
-      }
-
-      const lastKey = allWeeks[allWeeks.length - 1];
-      const lastParts = typeof lastKey === "string" ? lastKey.split('-W') : [];
-      const lastYear = Number(lastParts[0]);
-      const lastWeek = Number(lastParts[1]);
-      if (Number.isFinite(lastYear) && Number.isFinite(lastWeek)) {
-        if (hireYear > lastYear || (hireYear === lastYear && hireWeek > lastWeek)) {
-          return allWeeks.length;
-        }
-      }
-
-      return startIndex;
-    }
-
-    if (hireIndex > startIndex) {
-      return hireIndex;
-    }
-    return startIndex;
-  }
-
   function makeDraggable(el, handle) {
     let offsetX = 0, offsetY = 0, isDown = false;
     handle.addEventListener('mousedown', e => { isDown = true; offsetX = el.offsetLeft - e.clientX; offsetY = el.offsetTop - e.clientY; document.body.style.userSelect = "none"; });
@@ -856,9 +817,31 @@
       }, 0);
 
       const joinWeek = getEmployeeJoinWeek(employeeRecord);
-      const [hireYear, hireWeek] = joinWeek || [SETTINGS.startYear, SETTINGS.startWeek];
-      const startIndex = getEffectiveStartWeek(allWeeks, hireYear, hireWeek);
-      const expectedWeeks = startIndex === -1 ? 0 : (allWeeks.length - startIndex);
+      let effectiveWeeks = allWeeks.slice();
+
+      if (joinWeek) {
+        const [hireYear, hireWeek] = joinWeek;
+        effectiveWeeks = effectiveWeeks.filter(weekKey => {
+          const parts = typeof weekKey === 'string' ? weekKey.split('-W') : [];
+          const year = Number(parts[0]);
+          const week = Number(parts[1]);
+          if (!Number.isFinite(year) || !Number.isFinite(week)) {
+            return false;
+          }
+          return year > hireYear || (year === hireYear && week >= hireWeek);
+        });
+      }
+
+      const startKey = `${SETTINGS.startYear}-W${SETTINGS.startWeek}`;
+      const startIndex = allWeeks.indexOf(startKey);
+      if (startIndex !== -1) {
+        const validWeeks = new Set(allWeeks.slice(startIndex));
+        effectiveWeeks = effectiveWeeks.filter(weekKey => validWeeks.has(weekKey));
+      } else {
+        effectiveWeeks = [];
+      }
+
+      const expectedWeeks = effectiveWeeks.length;
 
       html += `<tr style="background:${rowBg};">`;
       html += `<td style="padding:6px;border:1px solid #444;text-align:left;color:#fff;position:sticky;left:0;background:${rowBg};">${employeeName} [${id}]</td>`;
