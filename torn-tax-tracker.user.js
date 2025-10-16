@@ -720,6 +720,26 @@
     return getWeekNumber(joinDate);
   }
 
+  function compareWeeks(yearA, weekA, yearB, weekB) {
+    if (yearA !== yearB) {
+      return yearA - yearB;
+    }
+    return weekA - weekB;
+  }
+
+  function filterWeeksByHire(allWeeks, hireYear, hireWeek) {
+    const [lastYear, lastWeek] = allWeeks.length
+      ? allWeeks[allWeeks.length - 1].split('-W').map(Number)
+      : [0, 0];
+    if (compareWeeks(hireYear, hireWeek, lastYear, lastWeek) > 0) {
+      return [];
+    }
+    return allWeeks.filter(weekKey => {
+      const [year, week] = weekKey.split('-W').map(Number);
+      return compareWeeks(year, week, hireYear, hireWeek) >= 0;
+    });
+  }
+
   function makeDraggable(el, handle) {
     let offsetX = 0, offsetY = 0, isDown = false;
     handle.addEventListener('mousedown', e => { isDown = true; offsetX = el.offsetLeft - e.clientX; offsetY = el.offsetTop - e.clientY; document.body.style.userSelect = "none"; });
@@ -821,24 +841,13 @@
 
       if (joinWeek) {
         const [hireYear, hireWeek] = joinWeek;
-        effectiveWeeks = effectiveWeeks.filter(weekKey => {
-          const parts = typeof weekKey === 'string' ? weekKey.split('-W') : [];
-          const year = Number(parts[0]);
-          const week = Number(parts[1]);
-          if (!Number.isFinite(year) || !Number.isFinite(week)) {
-            return false;
-          }
-          return year > hireYear || (year === hireYear && week >= hireWeek);
-        });
+        effectiveWeeks = filterWeeksByHire(allWeeks, hireYear, hireWeek);
       }
 
       const startKey = `${SETTINGS.startYear}-W${SETTINGS.startWeek}`;
       const startIndex = allWeeks.indexOf(startKey);
       if (startIndex !== -1) {
-        const validWeeks = new Set(allWeeks.slice(startIndex));
-        effectiveWeeks = effectiveWeeks.filter(weekKey => validWeeks.has(weekKey));
-      } else {
-        effectiveWeeks = [];
+        effectiveWeeks = effectiveWeeks.filter(weekKey => allWeeks.indexOf(weekKey) >= startIndex);
       }
 
       const expectedWeeks = effectiveWeeks.length;
