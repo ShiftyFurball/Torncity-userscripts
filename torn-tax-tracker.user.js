@@ -735,6 +735,9 @@
         return sum + (type === 'money' ? data.money : data.items);
       }, 0);
 
+      const firstContributionWeekIndex = allWeeks.findIndex(week => weeklyData[week] && weeklyData[week][id]);
+      const expectedWeeks = firstContributionWeekIndex === -1 ? 0 : (allWeeks.length - firstContributionWeekIndex);
+
       html += `<tr style="background:${rowBg};">`;
       html += `<td style="padding:6px;border:1px solid #444;text-align:left;color:#fff;position:sticky;left:0;background:${rowBg};">${COMPANY_MEMBERS[id]} [${id}]</td>`;
 
@@ -749,7 +752,7 @@
         html += `<td style="background:${cellColor};color:${cellText};border:1px solid #444;" title="Paid ${paidLabel} / Required ${reqLabel}">${met ? '✅' : '❌'}</td>`;
       });
 
-      const expected = allWeeks.length * req.amount;
+      const expected = expectedWeeks * req.amount;
       const balance = totalPaid - expected;
       const totalLabel = type === 'money' ? `$${totalPaid.toLocaleString()}` : `${totalPaid} ${SETTINGS.taxItemName}`;
       html += `<td style="color:#66ff66;padding:6px;border:1px solid #444;position:sticky;right:140px;background:${rowBg};">${totalLabel}</td>`;
