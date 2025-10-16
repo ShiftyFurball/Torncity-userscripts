@@ -58,6 +58,55 @@
     return Number.isFinite(numeric) ? numeric : undefined;
   }
 
+  function normalizeEmployeeRecord(record) {
+    if (!record) {
+      return { name: "", joinDays: null, joinDate: null };
+    }
+    if (typeof record === "string") {
+      return { name: record, joinDays: null, joinDate: null };
+    }
+    if (typeof record === "object") {
+      const name = typeof record.name === "string" ? record.name : "";
+      const joinDaysValue = Number(record.joinDays);
+      const joinDateValue = Number(record.joinDate);
+      return {
+        name,
+        joinDays: Number.isFinite(joinDaysValue) ? joinDaysValue : null,
+        joinDate: Number.isFinite(joinDateValue) && joinDateValue > 0 ? joinDateValue : null
+      };
+    }
+    return { name: "", joinDays: null, joinDate: null };
+  }
+
+  function normalizeEmployeeMap(map) {
+    const normalized = {};
+    Object.keys(map || {}).forEach(id => {
+      normalized[id] = normalizeEmployeeRecord(map[id]);
+    });
+    return normalized;
+  }
+
+  function getEmployeeName(record) {
+    if (!record) {
+      return "";
+    }
+    if (typeof record === "string") {
+      return record;
+    }
+    if (typeof record === "object" && record !== null) {
+      return typeof record.name === "string" ? record.name : "";
+    }
+    return "";
+  }
+
+  function getEmployeeJoinTimestamp(record) {
+    if (!record || typeof record !== "object") {
+      return null;
+    }
+    const ts = Number(record.joinDate);
+    return Number.isFinite(ts) && ts > 0 ? ts : null;
+  }
+
   function loadItemCatalog() {
     try {
       const saved = localStorage.getItem(STORAGE_KEY_ITEM_CATALOG);
@@ -470,7 +519,8 @@
     let text = "";
     Object.keys(SETTINGS.manualMembers).forEach(id => {
       const req = getMemberRequirement(id);
-      text += `${id}:${SETTINGS.manualMembers[id]}:${req.type}:${req.amount}\n`;
+      const name = getEmployeeName(SETTINGS.manualMembers[id]);
+      text += `${id}:${name}:${req.type}:${req.amount}\n`;
     });
 
     editor.innerHTML = `
@@ -494,7 +544,12 @@
         const parts = line.split(":").map(x => x.trim());
         const [id, name, type, amount] = parts;
         if (id && name) {
-          newList[id] = name;
+          const existing = normalizeEmployeeRecord(SETTINGS.manualMembers[id]);
+          newList[id] = normalizeEmployeeRecord({
+            name,
+            joinDays: existing.joinDays,
+            joinDate: existing.joinDate
+          });
           const normalizedType = (type === "item" ? "item" : "money");
           const parsedAmount = parseInt(amount || (normalizedType === "money" ? SETTINGS.defaultMoneyTax : SETTINGS.defaultItemTax), 10);
           newReqs[id] = { type: normalizedType, amount: isNaN(parsedAmount) ? (normalizedType === "money" ? SETTINGS.defaultMoneyTax : SETTINGS.defaultItemTax) : parsedAmount, useDefault: false };
@@ -524,13 +579,24 @@
       weeklyData = fake.weeklyData;
     } else {
       if (SETTINGS.manualMode) {
-        employees = SETTINGS.manualMembers;
+        employees = normalizeEmployeeMap(SETTINGS.manualMembers);
+        SETTINGS.manualMembers = employees;
       } else {
         const res = await fetch(`https://api.torn.com/company/?selections=employees&key=${encodeURIComponent(SETTINGS.apiKey)}`);
         const data = await res.json();
         employees = {};
         Object.keys(data.company_employees || {}).forEach(id => {
-          employees[id] = data.company_employees[id].name;
+          const info = data.company_employees[id];
+          if (!info) {
+            return;
+          }
+          const joinDaysValue = Number(info.days_in_company);
+          const joinDateValue = Number(info.join_date);
+          employees[id] = {
+            name: typeof info.name === "string" ? info.name : "",
+            joinDays: Number.isFinite(joinDaysValue) ? joinDaysValue : null,
+            joinDate: Number.isFinite(joinDateValue) && joinDateValue > 0 ? joinDateValue : null
+          };
         });
       }
 
@@ -642,6 +708,18 @@
     return [d.getUTCFullYear(), weekNo];
   }
 
+  function getEmployeeJoinWeek(record) {
+    const ts = getEmployeeJoinTimestamp(record);
+    if (!ts) {
+      return null;
+    }
+    const joinDate = new Date(ts * 1000);
+    if (Number.isNaN(joinDate.getTime())) {
+      return null;
+    }
+    return getWeekNumber(joinDate);
+  }
+
   function makeDraggable(el, handle) {
     let offsetX = 0, offsetY = 0, isDown = false;
     handle.addEventListener('mousedown', e => { isDown = true; offsetX = el.offsetLeft - e.clientX; offsetY = el.offsetTop - e.clientY; document.body.style.userSelect = "none"; });
@@ -660,12 +738,13 @@
   }
 
   function makeFakeData() {
-    const employees = {
-      101: 'Alice',
-      102: 'Bob',
-      103: 'Charlie',
-      104: 'Diana'
-    };
+    const now = Math.floor(Date.now() / 1000);
+    const employees = normalizeEmployeeMap({
+      101: { name: 'Alice', joinDays: 140, joinDate: now - (140 * 86400) },
+      102: { name: 'Bob', joinDays: 90, joinDate: now - (90 * 86400) },
+      103: { name: 'Charlie', joinDays: 30, joinDate: now - (30 * 86400) },
+      104: { name: 'Diana', joinDays: 10, joinDate: now - (10 * 86400) }
+    });
     const weeklyData = {};
     const weekKeys = generateWeekKeys(SETTINGS.startYear, SETTINGS.startWeek);
     weekKeys.forEach(weekKey => {
@@ -729,17 +808,32 @@
     employeeIds.forEach((id, idx) => {
       const req = getMemberRequirement(id);
       const type = req.type === 'item' ? 'item' : 'money';
+      const employeeRecord = COMPANY_MEMBERS[id];
+      const employeeName = getEmployeeName(employeeRecord) || 'Unknown';
       const rowBg = (idx % 2 === 0) ? '#202020' : '#262626';
       const totalPaid = allWeeks.reduce((sum, week) => {
         const data = (weeklyData[week] && weeklyData[week][id]) || { money: 0, items: 0 };
         return sum + (type === 'money' ? data.money : data.items);
       }, 0);
 
-      const firstContributionWeekIndex = allWeeks.findIndex(week => weeklyData[week] && weeklyData[week][id]);
-      const expectedWeeks = firstContributionWeekIndex === -1 ? 0 : (allWeeks.length - firstContributionWeekIndex);
+      const joinWeek = getEmployeeJoinWeek(employeeRecord);
+      const [hireYear, hireWeek] = joinWeek || [SETTINGS.startYear, SETTINGS.startWeek];
+      const startIndex = allWeeks.findIndex(weekKey => {
+        const parts = weekKey.split('-W');
+        if (parts.length !== 2) {
+          return false;
+        }
+        const yr = Number(parts[0]);
+        const wk = Number(parts[1]);
+        if (!Number.isFinite(yr) || !Number.isFinite(wk)) {
+          return false;
+        }
+        return (yr > hireYear || (yr === hireYear && wk >= hireWeek));
+      });
+      const expectedWeeks = startIndex === -1 ? 0 : (allWeeks.length - startIndex);
 
       html += `<tr style="background:${rowBg};">`;
-      html += `<td style="padding:6px;border:1px solid #444;text-align:left;color:#fff;position:sticky;left:0;background:${rowBg};">${COMPANY_MEMBERS[id]} [${id}]</td>`;
+      html += `<td style="padding:6px;border:1px solid #444;text-align:left;color:#fff;position:sticky;left:0;background:${rowBg};">${employeeName} [${id}]</td>`;
 
       displayWeeks.forEach(week => {
         const data = (weeklyData[week] && weeklyData[week][id]) || { money: 0, items: 0 };
@@ -768,7 +862,7 @@
       if (balance < 0) {
         const owe = type === 'money' ? `$${Math.abs(balance).toLocaleString()}` : `${Math.abs(balance)} ${SETTINGS.taxItemName}`;
         html += `<td style="color:#ff6666;padding:6px;border:1px solid #444;position:sticky;right:0;background:${rowBg};">Owes ${owe}</td>`;
-        owingList.push({ id, name: COMPANY_MEMBERS[id], amount: owe });
+        owingList.push({ id, name: employeeName, amount: owe });
       } else if (balance > 0) {
         const over = type === 'money' ? `$${balance.toLocaleString()}` : `${balance} ${SETTINGS.taxItemName}`;
         html += `<td style="color:#66ccff;padding:6px;border:1px solid #444;position:sticky;right:0;background:${rowBg};">Overpaid ${over}</td>`;
@@ -841,7 +935,7 @@
       return;
     }
 
-    const rows = ids.sort((a, b) => employees[a].localeCompare(employees[b])).map(id => {
+    const rows = ids.sort((a, b) => getEmployeeName(employees[a]).localeCompare(getEmployeeName(employees[b]))).map(id => {
       const stored = SETTINGS.memberRequirements[id];
       const req = getMemberRequirement(id);
       const isCustom = stored ? !stored.useDefault : false;
@@ -850,7 +944,7 @@
       const disabledAttr = isCustom ? '' : 'disabled';
       return `
         <tr>
-          <td style="padding:6px;border:1px solid #444;text-align:left;color:#fff;">${employees[id]} [${id}]</td>
+          <td style="padding:6px;border:1px solid #444;text-align:left;color:#fff;">${getEmployeeName(employees[id])} [${id}]</td>
           <td style="padding:6px;border:1px solid #444;">
             <label style="display:flex;align-items:center;gap:6px;justify-content:center;color:#ccc;">
               <input type="checkbox" data-id="${id}" class="emp-use-custom" ${isCustom ? 'checked' : ''}>
@@ -1001,7 +1095,8 @@
 
   function buildEmployeeNameIndex(employees) {
     const index = {};
-    Object.entries(employees || {}).forEach(([id, name]) => {
+    Object.entries(employees || {}).forEach(([id, record]) => {
+      const name = getEmployeeName(record);
       if (typeof name !== 'string') {
         return;
       }
