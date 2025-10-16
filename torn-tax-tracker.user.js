@@ -720,6 +720,13 @@
     return getWeekNumber(joinDate);
   }
 
+  function getEmployeeJoinWeekFromDays(record) {
+    if (!record || record.joinDays == null) return null;
+    const hireDate = new Date();
+    hireDate.setUTCDate(hireDate.getUTCDate() - record.joinDays);
+    return getWeekNumber(hireDate); // returns [year, week]
+  }
+
   function makeDraggable(el, handle) {
     let offsetX = 0, offsetY = 0, isDown = false;
     handle.addEventListener('mousedown', e => { isDown = true; offsetX = el.offsetLeft - e.clientX; offsetY = el.offsetTop - e.clientY; document.body.style.userSelect = "none"; });
@@ -816,18 +823,14 @@
         return sum + (type === 'money' ? data.money : data.items);
       }, 0);
 
-      const joinWeek = getEmployeeJoinWeek(employeeRecord);
+      const joinWeek = getEmployeeJoinWeekFromDays(employeeRecord) || getEmployeeJoinWeek(employeeRecord);
       let effectiveWeeks = allWeeks.slice();
 
       if (joinWeek) {
         const [hireYear, hireWeek] = joinWeek;
+        // keep only weeks on/after hire week
         effectiveWeeks = effectiveWeeks.filter(weekKey => {
-          const parts = typeof weekKey === 'string' ? weekKey.split('-W') : [];
-          const year = Number(parts[0]);
-          const week = Number(parts[1]);
-          if (!Number.isFinite(year) || !Number.isFinite(week)) {
-            return false;
-          }
+          const [year, week] = weekKey.split('-W').map(Number);
           return year > hireYear || (year === hireYear && week >= hireWeek);
         });
       }
