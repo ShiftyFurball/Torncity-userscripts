@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      7.0
+// @version      7.1
 // @description  Track weekly company tax from employees in Torn with Torn-styled table, draggable/resizable panel, reminders, overpayment tracking, totals row, and Test Mode.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -416,6 +416,9 @@
 
     editor.innerHTML = `
       <h3 style="margin:0 0 10px 0;">Settings</h3>
+      <label style="display:block;">API Key:
+        <input id="setApiKey" type="text" value="${SETTINGS.apiKey}" style="width:100%;box-sizing:border-box;background:#111;color:#0f0;border:1px solid #555;margin-top:6px;">
+      </label><br>
       <label>Start Year:
         <input id="setYear" type="number" value="${SETTINGS.startYear}" style="width:90px;background:#111;color:#0f0;border:1px solid #555;margin-left:8px;">
       </label><br><br>
@@ -480,6 +483,8 @@
       SETTINGS.manualMode = editor.querySelector("#manualMode").checked;
       SETTINGS.testMode = editor.querySelector("#testMode").checked;
       SETTINGS.enableEmployeeMenu = editor.querySelector("#enableEmployeeMenu").checked;
+      const apiInput = editor.querySelector("#setApiKey");
+      SETTINGS.apiKey = apiInput ? apiInput.value.trim() : SETTINGS.apiKey;
       const typeSelect = editor.querySelector("#setDefaultRequirementType");
       SETTINGS.defaultRequirementType = typeSelect && typeSelect.value === "item" ? "item" : "money";
       SETTINGS.defaultMoneyTax = parseInt(editor.querySelector("#setDefaultMoney").value, 10) || DEFAULT_SETTINGS.defaultMoneyTax;
