@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      7.1
+// @version      7.2
 // @description  Track weekly company tax from employees in Torn with Torn-styled table, draggable/resizable panel, reminders, overpayment tracking, totals row, and Test Mode.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -28,6 +28,9 @@
     testMode: false,
     // Per-member overrides
     memberRequirements: {},
+    memberRequirementResets: {},
+    memberWeekExclusions: {},
+    defaultRequirementReset: null,
     defaultMoneyTax: 10000000,
     defaultItemTax: 7,
     defaultRequirementType: "money",
@@ -84,6 +87,56 @@
       normalized[id] = normalizeEmployeeRecord(map[id]);
     });
     return normalized;
+  }
+
+  function parseWeekKey(key) {
+    if (typeof key !== "string") {
+      return null;
+    }
+    const match = key.match(/^(\d+)-W(\d+)$/);
+    if (!match) {
+      return null;
+    }
+    return [parseInt(match[1], 10), parseInt(match[2], 10)];
+  }
+
+  function compareWeekKeys(a, b) {
+    const pa = parseWeekKey(a);
+    const pb = parseWeekKey(b);
+    if (!pa && !pb) {
+      return 0;
+    }
+    if (!pa) {
+      return -1;
+    }
+    if (!pb) {
+      return 1;
+    }
+    if (pa[0] !== pb[0]) {
+      return pa[0] - pb[0];
+    }
+    return pa[1] - pb[1];
+  }
+
+  function isWeekOnOrAfter(candidate, baseline) {
+    const cand = parseWeekKey(candidate);
+    const base = parseWeekKey(baseline);
+    if (!cand || !base) {
+      return false;
+    }
+    if (cand[0] > base[0]) {
+      return true;
+    }
+    if (cand[0] < base[0]) {
+      return false;
+    }
+    return cand[1] >= base[1];
+  }
+
+  function getCurrentWeekKey() {
+    const now = new Date();
+    const [year, week] = getWeekNumber(now);
+    return `${year}-W${week}`;
   }
 
   function getEmployeeName(record) {
@@ -253,6 +306,15 @@
   if (SETTINGS.defaultRequirementType !== "item" && SETTINGS.defaultRequirementType !== "money") {
     SETTINGS.defaultRequirementType = DEFAULT_SETTINGS.defaultRequirementType;
   }
+  if (!SETTINGS.memberRequirementResets || typeof SETTINGS.memberRequirementResets !== "object") {
+    SETTINGS.memberRequirementResets = {};
+  }
+  if (!SETTINGS.memberWeekExclusions || typeof SETTINGS.memberWeekExclusions !== "object") {
+    SETTINGS.memberWeekExclusions = {};
+  }
+  if (typeof SETTINGS.defaultRequirementReset !== "string") {
+    SETTINGS.defaultRequirementReset = `${SETTINGS.startYear}-W${SETTINGS.startWeek}`;
+  }
 
   let lastEmployeesCache = {};
   let lastWeeklyDataCache = {};
@@ -275,6 +337,54 @@
     const fallback = type === 'item' ? SETTINGS.defaultItemTax : SETTINGS.defaultMoneyTax;
     const amount = Number.isFinite(req.amount) ? req.amount : fallback;
     return { type, amount, isDefault: false };
+  }
+
+  function getRequirementStartWeek(id, requirement) {
+    if (SETTINGS.memberRequirementResets && typeof SETTINGS.memberRequirementResets[id] === "string") {
+      return SETTINGS.memberRequirementResets[id];
+    }
+    if (requirement && requirement.isDefault && typeof SETTINGS.defaultRequirementReset === "string") {
+      return SETTINGS.defaultRequirementReset;
+    }
+    return `${SETTINGS.startYear}-W${SETTINGS.startWeek}`;
+  }
+
+  function getExcludedWeeksForMember(id) {
+    if (!SETTINGS.memberWeekExclusions) {
+      return [];
+    }
+    const exclusions = SETTINGS.memberWeekExclusions[id];
+    if (!Array.isArray(exclusions)) {
+      return [];
+    }
+    return exclusions.filter(week => typeof week === "string");
+  }
+
+  function setExcludedWeeksForMember(id, weeks) {
+    if (!SETTINGS.memberWeekExclusions) {
+      SETTINGS.memberWeekExclusions = {};
+    }
+    if (!weeks || weeks.length === 0) {
+      delete SETTINGS.memberWeekExclusions[id];
+      return;
+    }
+    const unique = Array.from(new Set(weeks.filter(week => typeof week === "string")));
+    unique.sort(compareWeekKeys);
+    SETTINGS.memberWeekExclusions[id] = unique;
+  }
+
+  function toggleWeekExclusionForMember(id, weekKey) {
+    if (!id || !weekKey || !parseWeekKey(weekKey)) {
+      return;
+    }
+    const existing = new Set(getExcludedWeeksForMember(id));
+    if (existing.has(weekKey)) {
+      existing.delete(weekKey);
+    } else {
+      existing.add(weekKey);
+    }
+    setExcludedWeeksForMember(id, Array.from(existing));
+    saveSettings(SETTINGS);
   }
 
   // Floating open button
@@ -477,6 +587,7 @@
     }
     editor.querySelector("#cancelSet").addEventListener("click", () => editor.remove());
     editor.querySelector("#saveSet").addEventListener("click", () => {
+      const previousDefaults = getDefaultRequirement();
       SETTINGS.startYear = parseInt(editor.querySelector("#setYear").value, 10);
       SETTINGS.startWeek = parseInt(editor.querySelector("#setWeek").value, 10);
       SETTINGS.maxWeeks = parseInt(editor.querySelector("#setMaxWeeks").value, 10);
@@ -493,6 +604,9 @@
       SETTINGS.reminderMessage = editor.querySelector("#setReminder").value.trim() || DEFAULT_SETTINGS.reminderMessage;
       SETTINGS.requiredTax = SETTINGS.defaultMoneyTax;
       const defaults = getDefaultRequirement();
+      if (previousDefaults.type !== defaults.type || previousDefaults.amount !== defaults.amount) {
+        SETTINGS.defaultRequirementReset = getCurrentWeekKey();
+      }
       Object.keys(SETTINGS.memberRequirements).forEach(id => {
         const req = SETTINGS.memberRequirements[id];
         if (req && req.useDefault) {
@@ -544,6 +658,10 @@
       const lines = editor.querySelector("#empInput").value.split("\n");
       const newList = {};
       const newReqs = {};
+      const previousRequirements = {};
+      Object.keys(SETTINGS.manualMembers || {}).forEach(id => {
+        previousRequirements[id] = getMemberRequirement(id);
+      });
       lines.forEach(line => {
         if (!line.trim()) return;
         const parts = line.split(":").map(x => x.trim());
@@ -567,7 +685,28 @@
           delete SETTINGS.memberRequirements[id];
         }
       });
+      if (SETTINGS.memberRequirementResets) {
+        Object.keys(SETTINGS.memberRequirementResets).forEach(id => {
+          if (!newList[id]) {
+            delete SETTINGS.memberRequirementResets[id];
+          }
+        });
+      }
+      if (SETTINGS.memberWeekExclusions) {
+        Object.keys(SETTINGS.memberWeekExclusions).forEach(id => {
+          if (!newList[id]) {
+            delete SETTINGS.memberWeekExclusions[id];
+          }
+        });
+      }
       SETTINGS.memberRequirements = Object.assign({}, SETTINGS.memberRequirements, newReqs);
+      Object.keys(newList).forEach(id => {
+        const prev = previousRequirements[id];
+        const current = getMemberRequirement(id);
+        if (!prev || prev.type !== current.type || prev.amount !== current.amount || (!!prev.isDefault) !== (!!current.isDefault)) {
+          SETTINGS.memberRequirementResets[id] = getCurrentWeekKey();
+        }
+      });
       saveSettings(SETTINGS);
       editor.remove();
       fetchData();
@@ -610,6 +749,20 @@
           delete SETTINGS.memberRequirements[id];
         }
       });
+      if (SETTINGS.memberRequirementResets) {
+        Object.keys(SETTINGS.memberRequirementResets).forEach(id => {
+          if (!employees[id]) {
+            delete SETTINGS.memberRequirementResets[id];
+          }
+        });
+      }
+      if (SETTINGS.memberWeekExclusions) {
+        Object.keys(SETTINGS.memberWeekExclusions).forEach(id => {
+          if (!employees[id]) {
+            delete SETTINGS.memberWeekExclusions[id];
+          }
+        });
+      }
 
       const defaults = getDefaultRequirement();
       Object.keys(employees).forEach(id => {
@@ -823,11 +976,6 @@
       const employeeRecord = COMPANY_MEMBERS[id];
       const employeeName = getEmployeeName(employeeRecord) || 'Unknown';
       const rowBg = (idx % 2 === 0) ? '#202020' : '#262626';
-      const totalPaid = allWeeks.reduce((sum, week) => {
-        const data = (weeklyData[week] && weeklyData[week][id]) || { money: 0, items: 0 };
-        return sum + (type === 'money' ? data.money : data.items);
-      }, 0);
-
       const joinWeek = getEmployeeJoinWeekFromDays(employeeRecord) || getEmployeeJoinWeek(employeeRecord);
       let effectiveWeeks = allWeeks.slice();
 
@@ -841,15 +989,24 @@
       }
 
       const startKey = `${SETTINGS.startYear}-W${SETTINGS.startWeek}`;
-      const startIndex = allWeeks.indexOf(startKey);
-      if (startIndex !== -1) {
-        const validWeeks = new Set(allWeeks.slice(startIndex));
-        effectiveWeeks = effectiveWeeks.filter(weekKey => validWeeks.has(weekKey));
-      } else {
-        effectiveWeeks = [];
+      effectiveWeeks = effectiveWeeks.filter(weekKey => isWeekOnOrAfter(weekKey, startKey));
+
+      const requirementStart = getRequirementStartWeek(id, req);
+      if (requirementStart) {
+        effectiveWeeks = effectiveWeeks.filter(weekKey => isWeekOnOrAfter(weekKey, requirementStart));
       }
 
-      const expectedWeeks = effectiveWeeks.length;
+      const exclusions = new Set(
+        getExcludedWeeksForMember(id).filter(weekKey => effectiveWeeks.includes(weekKey))
+      );
+
+      const countedWeeks = effectiveWeeks.filter(weekKey => !exclusions.has(weekKey));
+      const countedWeeksSet = new Set(countedWeeks);
+
+      const totalPaid = countedWeeks.reduce((sum, weekKey) => {
+        const data = (weeklyData[weekKey] && weeklyData[weekKey][id]) || { money: 0, items: 0 };
+        return sum + (type === 'money' ? data.money : data.items);
+      }, 0);
 
       html += `<tr style="background:${rowBg};">`;
       html += `<td style="padding:6px;border:1px solid #444;text-align:left;color:#fff;position:sticky;left:0;background:${rowBg};">${employeeName} [${id}]</td>`;
@@ -857,15 +1014,34 @@
       displayWeeks.forEach(week => {
         const data = (weeklyData[week] && weeklyData[week][id]) || { money: 0, items: 0 };
         const paid = type === 'money' ? data.money : data.items;
-        const met = paid >= req.amount;
-        const cellColor = met ? '#003300' : '#3a0000';
-        const cellText = met ? '#66ff66' : '#ff6666';
+        const isEffective = effectiveWeeks.includes(week);
+        const isExcluded = exclusions.has(week);
+        const isCounted = countedWeeksSet.has(week);
+        let cellColor = '#222222';
+        let cellText = '#888888';
+        let symbol = '—';
         const paidLabel = type === 'money' ? `$${paid.toLocaleString()}` : `${paid} ${SETTINGS.taxItemName}`;
         const reqLabel = type === 'money' ? `$${req.amount.toLocaleString()}` : `${req.amount} ${SETTINGS.taxItemName}`;
-        html += `<td style="background:${cellColor};color:${cellText};border:1px solid #444;" title="Paid ${paidLabel} / Required ${reqLabel}">${met ? '✅' : '❌'}</td>`;
+        let title = `Paid ${paidLabel} / Required ${reqLabel}`;
+        if (!isEffective) {
+          title = 'No requirement for this week';
+        } else if (isExcluded) {
+          cellColor = '#333333';
+          cellText = '#cccccc';
+          symbol = '⏸';
+          title = `Week excluded from requirement. Paid ${paidLabel}. Click to include.`;
+        } else {
+          const met = paid >= req.amount;
+          cellColor = met ? '#003300' : '#3a0000';
+          cellText = met ? '#66ff66' : '#ff6666';
+          symbol = met ? '✅' : '❌';
+          title = `Paid ${paidLabel} / Required ${reqLabel}. Click to exclude.`;
+        }
+        const cursor = isEffective ? 'pointer' : 'default';
+        html += `<td class="tax-week-cell" data-employee="${id}" data-week="${week}" data-effective="${isEffective}" data-counted="${isCounted}" style="background:${cellColor};color:${cellText};border:1px solid #444;cursor:${cursor};" title="${title}">${symbol}</td>`;
       });
 
-      const expected = expectedWeeks * req.amount;
+      const expected = countedWeeks.length * req.amount;
       const balance = totalPaid - expected;
       const totalLabel = type === 'money' ? `$${totalPaid.toLocaleString()}` : `${totalPaid} ${SETTINGS.taxItemName}`;
       html += `<td style="color:#66ff66;padding:6px;border:1px solid #444;position:sticky;right:140px;background:${rowBg};">${totalLabel}</td>`;
@@ -893,6 +1069,8 @@
     });
 
     html += '</tbody></table></div>';
+
+    const tipHtml = '<div style="margin-top:8px;color:#ccc;font-size:11px;">Click a week cell to exclude/include it for that employee. Excluded weeks show the ⏸ icon.</div>';
 
     let summaryHtml = '<div style="margin-top:12px;padding:10px;background:#222;border:1px solid #444;border-radius:6px;">';
     summaryHtml += '<strong style="color:#fff;">Summary</strong><br>';
@@ -926,7 +1104,22 @@
     }
     reminderHtml += '</div>';
 
-    overviewView.innerHTML = html + summaryHtml + reminderHtml;
+    overviewView.innerHTML = tipHtml + html + summaryHtml + reminderHtml;
+
+    overviewView.querySelectorAll('.tax-week-cell').forEach(cell => {
+      cell.addEventListener('click', () => {
+        if (cell.getAttribute('data-effective') !== 'true') {
+          return;
+        }
+        const week = cell.getAttribute('data-week');
+        const empId = cell.getAttribute('data-employee');
+        toggleWeekExclusionForMember(empId, week);
+        renderOverview(lastWeeklyDataCache, lastEmployeesCache);
+        if (SETTINGS.enableEmployeeMenu) {
+          renderEmployeeMenu(lastEmployeesCache);
+        }
+      });
+    });
 
     overviewView.querySelectorAll('.tax-reminder-link').forEach(link => {
       link.addEventListener('click', e => {
@@ -1042,24 +1235,42 @@
       saveButton.addEventListener('click', () => {
         const types = employeeView.querySelectorAll('.emp-req-type');
         const amounts = employeeView.querySelectorAll('.emp-req-amount');
-        const toggles = employeeView.querySelectorAll('.emp-use-custom');
+        const toggles = Array.from(employeeView.querySelectorAll('.emp-use-custom'));
+        const previousRequirements = {};
         toggles.forEach(box => {
           const id = box.getAttribute('data-id');
+          previousRequirements[id] = getMemberRequirement(id);
+        });
+
+        toggles.forEach(box => {
+          const id = box.getAttribute('data-id');
+          const prev = previousRequirements[id] || getDefaultRequirement();
+          let nextRequirement;
           if (!box.checked) {
             const defaults = getDefaultRequirement();
             SETTINGS.memberRequirements[id] = { type: defaults.type, amount: defaults.amount, useDefault: true };
-            return;
+            nextRequirement = defaults;
+            delete SETTINGS.memberRequirementResets[id];
+          } else {
+            const select = types ? Array.from(types).find(sel => sel.getAttribute('data-id') === id) : null;
+            const amountInput = amounts ? Array.from(amounts).find(input => input.getAttribute('data-id') === id) : null;
+            const type = select && select.value === 'item' ? 'item' : 'money';
+            const amountValue = amountInput ? parseInt(amountInput.value, 10) : NaN;
+            const fallback = type === 'money' ? SETTINGS.defaultMoneyTax : SETTINGS.defaultItemTax;
+            const normalizedAmount = isNaN(amountValue) ? fallback : amountValue;
+            SETTINGS.memberRequirements[id] = {
+              type,
+              amount: normalizedAmount,
+              useDefault: false
+            };
+            nextRequirement = { type, amount: normalizedAmount, isDefault: false };
           }
-          const select = Array.from(types).find(sel => sel.getAttribute('data-id') === id);
-          const amountInput = Array.from(amounts).find(input => input.getAttribute('data-id') === id);
-          const type = select && select.value === 'item' ? 'item' : 'money';
-          const amountValue = amountInput ? parseInt(amountInput.value, 10) : NaN;
-          const fallback = type === 'money' ? SETTINGS.defaultMoneyTax : SETTINGS.defaultItemTax;
-          SETTINGS.memberRequirements[id] = {
-            type,
-            amount: isNaN(amountValue) ? fallback : amountValue,
-            useDefault: false
-          };
+          if (!nextRequirement) {
+            nextRequirement = getMemberRequirement(id);
+          }
+          if (!prev || prev.type !== nextRequirement.type || prev.amount !== nextRequirement.amount || (!!prev.isDefault) !== (!!nextRequirement.isDefault)) {
+            SETTINGS.memberRequirementResets[id] = getCurrentWeekKey();
+          }
         });
         saveSettings(SETTINGS);
         renderOverview(lastWeeklyDataCache, lastEmployeesCache);
