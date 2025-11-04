@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      7.2
+// @version      7.3
 // @description  Track weekly company tax from employees in Torn with Torn-styled table, draggable/resizable panel, reminders, overpayment tracking, totals row, and Test Mode.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -535,6 +535,16 @@
       <label>Start Week:
         <input id="setWeek" type="number" value="${SETTINGS.startWeek}" style="width:90px;background:#111;color:#0f0;border:1px solid #555;margin-left:8px;">
       </label><br><br>
+      <div style="margin:10px 0;padding:10px;border:1px solid #333;border-radius:6px;background:#191919;">
+        <div style="margin-bottom:6px;font-weight:bold;color:#0f0;">Recollect recent data</div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <span>Show last</span>
+          <input id="recollectWeeks" type="number" value="${Math.min(SETTINGS.maxWeeks || 6, 6)}" style="width:70px;background:#111;color:#0f0;border:1px solid #555;padding:4px;">
+          <span>weeks</span>
+          <button id="applyRecollect" style="background:#2e8b57;color:white;border:none;padding:4px 10px;border-radius:4px;cursor:pointer;">Recollect</button>
+        </div>
+        <small style="color:#ccc;display:block;margin-top:6px;">Updates the start week to the most recent weeks and refreshes the tracker immediately.</small>
+      </div>
       <label>Max Weeks to Display:
         <input id="setMaxWeeks" type="number" value="${SETTINGS.maxWeeks}" style="width:90px;background:#111;color:#0f0;border:1px solid #555;margin-left:8px;">
       </label><br><br>
@@ -584,6 +594,32 @@
       };
       updateItemLabel();
       itemNameInput.addEventListener("input", updateItemLabel);
+    }
+    const recollectInput = editor.querySelector("#recollectWeeks");
+    const recollectButton = editor.querySelector("#applyRecollect");
+    if (recollectButton && recollectInput) {
+      recollectButton.addEventListener("click", () => {
+        let weeks = parseInt(recollectInput.value, 10);
+        if (!Number.isFinite(weeks) || weeks < 1) {
+          weeks = 4;
+        } else if (weeks > 52) {
+          weeks = 52;
+        }
+        const offset = -(weeks - 1);
+        const { year, week } = getRelativeWeekFromCurrent(offset);
+        SETTINGS.startYear = year;
+        SETTINGS.startWeek = week;
+        saveSettings(SETTINGS);
+        const yearInput = editor.querySelector("#setYear");
+        const weekInput = editor.querySelector("#setWeek");
+        if (yearInput) {
+          yearInput.value = SETTINGS.startYear;
+        }
+        if (weekInput) {
+          weekInput.value = SETTINGS.startWeek;
+        }
+        fetchData();
+      });
     }
     editor.querySelector("#cancelSet").addEventListener("click", () => editor.remove());
     editor.querySelector("#saveSet").addEventListener("click", () => {
@@ -864,6 +900,14 @@
     const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
     const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
     return [d.getUTCFullYear(), weekNo];
+  }
+
+  function getRelativeWeekFromCurrent(offsetWeeks) {
+    const normalizedOffset = Number.isFinite(offsetWeeks) ? offsetWeeks : 0;
+    const reference = new Date();
+    reference.setUTCDate(reference.getUTCDate() + (normalizedOffset * 7));
+    const [year, week] = getWeekNumber(reference);
+    return { year, week };
   }
 
   function getEmployeeJoinWeek(record) {
