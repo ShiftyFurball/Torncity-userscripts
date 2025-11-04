@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      7.5
+// @version      7.6
 // @description  Track weekly company tax from employees in Torn with Torn-styled table, draggable/resizable panel, reminders, overpayment tracking, totals row, and Test Mode.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -1094,7 +1094,14 @@
         const reqLabel = type === 'money' ? `$${req.amount.toLocaleString()}` : `${req.amount} ${SETTINGS.taxItemName}`;
         let title = `Paid ${paidLabel} / Required ${reqLabel}`;
         if (!isEffective) {
-          title = 'No requirement for this week';
+          if (paid > 0) {
+            cellColor = '#113311';
+            cellText = '#66ff66';
+            symbol = '✅';
+            title = `No requirement for this week. Paid ${paidLabel}.`;
+          } else {
+            title = 'No requirement for this week';
+          }
         } else if (isExcluded) {
           cellColor = '#333333';
           cellText = '#cccccc';
