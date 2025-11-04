@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      7.4
+// @version      7.5
 // @description  Track weekly company tax from employees in Torn with Torn-styled table, draggable/resizable panel, reminders, overpayment tracking, totals row, and Test Mode.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -405,7 +405,7 @@
     width: "80%", height: "75%", background: "#1b1b1b", color: "#ccc",
     padding: "0", zIndex: "10000", borderRadius: "6px", overflow: "hidden",
     boxShadow: "0px 0px 15px rgba(0,0,0,0.7)", border: "1px solid #333",
-    fontFamily: "Verdana, sans-serif"
+    fontFamily: "'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', 'Apple Color Emoji', Verdana, sans-serif"
   });
 
   panel.innerHTML = `
