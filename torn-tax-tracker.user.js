@@ -1047,10 +1047,36 @@
       const countedWeeks = effectiveWeeks.filter(weekKey => !exclusions.has(weekKey));
       const countedWeeksSet = new Set(countedWeeks);
 
-      const totalPaid = countedWeeks.reduce((sum, weekKey) => {
+      const countedWeekEntries = countedWeeks.slice().sort(compareWeekKeys).map(weekKey => {
         const data = (weeklyData[weekKey] && weeklyData[weekKey][id]) || { money: 0, items: 0 };
-        return sum + (type === 'money' ? data.money : data.items);
-      }, 0);
+        return { weekKey, paid: type === 'money' ? data.money : data.items };
+      });
+
+      const totalPaid = countedWeekEntries.reduce((sum, entry) => sum + entry.paid, 0);
+
+      const weekCoverageStatus = {};
+      if (req.amount <= 0) {
+        countedWeekEntries.forEach(entry => {
+          weekCoverageStatus[entry.weekKey] = true;
+        });
+      } else if (countedWeekEntries.length > 0) {
+        const prefixTotals = [];
+        let runningTotal = 0;
+        countedWeekEntries.forEach((entry, index) => {
+          runningTotal += entry.paid;
+          prefixTotals[index] = runningTotal;
+        });
+        const coverageCounts = prefixTotals.map(total => Math.floor(total / req.amount));
+        const maxCoverageFromIndex = new Array(coverageCounts.length);
+        let runningMax = 0;
+        for (let i = coverageCounts.length - 1; i >= 0; i--) {
+          runningMax = Math.max(runningMax, coverageCounts[i]);
+          maxCoverageFromIndex[i] = runningMax;
+        }
+        countedWeekEntries.forEach((entry, index) => {
+          weekCoverageStatus[entry.weekKey] = maxCoverageFromIndex[index] >= (index + 1);
+        });
+      }
 
       html += `<tr style="background:${rowBg};">`;
       html += `<td style="padding:6px;border:1px solid #444;text-align:left;color:#fff;position:sticky;left:0;background:${rowBg};">${employeeName} [${id}]</td>`;
@@ -1075,11 +1101,22 @@
           symbol = '⏸';
           title = `Week excluded from requirement. Paid ${paidLabel}. Click to include.`;
         } else {
-          const met = paid >= req.amount;
+          let met;
+          if (req.amount <= 0) {
+            met = true;
+          } else if (isCounted && Object.prototype.hasOwnProperty.call(weekCoverageStatus, week)) {
+            met = weekCoverageStatus[week];
+          } else {
+            met = paid >= req.amount;
+          }
           cellColor = met ? '#003300' : '#3a0000';
           cellText = met ? '#66ff66' : '#ff6666';
           symbol = met ? '✅' : '❌';
-          title = `Paid ${paidLabel} / Required ${reqLabel}. Click to exclude.`;
+          if (met && paid < req.amount) {
+            title = `Paid ${paidLabel} / Required ${reqLabel}. Requirement covered by cumulative payments. Click to exclude.`;
+          } else {
+            title = `Paid ${paidLabel} / Required ${reqLabel}. Click to exclude.`;
+          }
         }
         const cursor = isEffective ? 'pointer' : 'default';
         html += `<td class="tax-week-cell" data-employee="${id}" data-week="${week}" data-effective="${isEffective}" data-counted="${isCounted}" style="background:${cellColor};color:${cellText};border:1px solid #444;cursor:${cursor};" title="${title}">${symbol}</td>`;
