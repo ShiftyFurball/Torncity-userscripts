@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      7.4
+// @version      7.5
 // @description  Track weekly company tax from employees in Torn with Torn-styled table, draggable/resizable panel, reminders, overpayment tracking, totals row, and Test Mode.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -340,13 +340,16 @@
   }
 
   function getRequirementStartWeek(id, requirement) {
+    const startKey = `${SETTINGS.startYear}-W${SETTINGS.startWeek}`;
     if (SETTINGS.memberRequirementResets && typeof SETTINGS.memberRequirementResets[id] === "string") {
-      return SETTINGS.memberRequirementResets[id];
+      const resetKey = SETTINGS.memberRequirementResets[id];
+      return isWeekOnOrAfter(resetKey, startKey) ? resetKey : startKey;
     }
     if (requirement && requirement.isDefault && typeof SETTINGS.defaultRequirementReset === "string") {
-      return SETTINGS.defaultRequirementReset;
+      const resetKey = SETTINGS.defaultRequirementReset;
+      return isWeekOnOrAfter(resetKey, startKey) ? resetKey : startKey;
     }
-    return `${SETTINGS.startYear}-W${SETTINGS.startWeek}`;
+    return startKey;
   }
 
   function getExcludedWeeksForMember(id) {
