@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      7.7
+// @version      7.8
 // @description  Track weekly company tax from employees in Torn with Torn-styled table, draggable/resizable panel, reminders, overpayment tracking, totals row, and Test Mode.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -30,6 +30,7 @@
     memberRequirements: {},
     memberRequirementResets: {},
     memberWeekExclusions: {},
+    memberWeekCarrybacks: {},
     defaultRequirementReset: null,
     defaultMoneyTax: 10000000,
     defaultItemTax: 7,
@@ -312,6 +313,9 @@
   if (!SETTINGS.memberWeekExclusions || typeof SETTINGS.memberWeekExclusions !== "object") {
     SETTINGS.memberWeekExclusions = {};
   }
+  if (!SETTINGS.memberWeekCarrybacks || typeof SETTINGS.memberWeekCarrybacks !== "object") {
+    SETTINGS.memberWeekCarrybacks = {};
+  }
   if (typeof SETTINGS.defaultRequirementReset !== "string") {
     SETTINGS.defaultRequirementReset = `${SETTINGS.startYear}-W${SETTINGS.startWeek}`;
   }
@@ -384,6 +388,60 @@
       existing.add(weekKey);
     }
     setExcludedWeeksForMember(id, Array.from(existing));
+    saveSettings(SETTINGS);
+  }
+
+  function getWeekCarrybacksForMember(id) {
+    if (!SETTINGS.memberWeekCarrybacks) {
+      SETTINGS.memberWeekCarrybacks = {};
+    }
+    const raw = SETTINGS.memberWeekCarrybacks[id];
+    if (!raw || typeof raw !== "object") {
+      return {};
+    }
+    const valid = {};
+    Object.keys(raw).forEach(weekKey => {
+      const target = raw[weekKey];
+      if (typeof weekKey === "string" && typeof target === "string" && parseWeekKey(weekKey) && parseWeekKey(target)) {
+        valid[weekKey] = target;
+      }
+    });
+    return valid;
+  }
+
+  function setWeekCarrybacksForMember(id, mapping) {
+    if (!SETTINGS.memberWeekCarrybacks) {
+      SETTINGS.memberWeekCarrybacks = {};
+    }
+    if (!mapping || Object.keys(mapping).length === 0) {
+      delete SETTINGS.memberWeekCarrybacks[id];
+      return;
+    }
+    const sanitized = {};
+    Object.keys(mapping).forEach(weekKey => {
+      const target = mapping[weekKey];
+      if (typeof weekKey === "string" && typeof target === "string" && parseWeekKey(weekKey) && parseWeekKey(target)) {
+        sanitized[weekKey] = target;
+      }
+    });
+    if (Object.keys(sanitized).length === 0) {
+      delete SETTINGS.memberWeekCarrybacks[id];
+      return;
+    }
+    SETTINGS.memberWeekCarrybacks[id] = sanitized;
+  }
+
+  function updateWeekCarrybackForMember(id, weekKey, targetWeek) {
+    if (!id || !weekKey || !parseWeekKey(weekKey)) {
+      return;
+    }
+    const existing = getWeekCarrybacksForMember(id);
+    if (!targetWeek || !parseWeekKey(targetWeek)) {
+      delete existing[weekKey];
+    } else {
+      existing[weekKey] = targetWeek;
+    }
+    setWeekCarrybacksForMember(id, existing);
     saveSettings(SETTINGS);
   }
 
@@ -735,6 +793,13 @@
           }
         });
       }
+      if (SETTINGS.memberWeekCarrybacks) {
+        Object.keys(SETTINGS.memberWeekCarrybacks).forEach(id => {
+          if (!newList[id]) {
+            delete SETTINGS.memberWeekCarrybacks[id];
+          }
+        });
+      }
       SETTINGS.memberRequirements = Object.assign({}, SETTINGS.memberRequirements, newReqs);
       Object.keys(newList).forEach(id => {
         const prev = previousRequirements[id];
@@ -796,6 +861,13 @@
         Object.keys(SETTINGS.memberWeekExclusions).forEach(id => {
           if (!employees[id]) {
             delete SETTINGS.memberWeekExclusions[id];
+          }
+        });
+      }
+      if (SETTINGS.memberWeekCarrybacks) {
+        Object.keys(SETTINGS.memberWeekCarrybacks).forEach(id => {
+          if (!employees[id]) {
+            delete SETTINGS.memberWeekCarrybacks[id];
           }
         });
       }
@@ -1049,11 +1121,56 @@
 
       const countedWeeks = effectiveWeeks.filter(weekKey => !exclusions.has(weekKey));
       const countedWeeksSet = new Set(countedWeeks);
-
-      const countedWeekEntries = countedWeeks.slice().sort(compareWeekKeys).map(weekKey => {
-        const data = (weeklyData[weekKey] && weeklyData[weekKey][id]) || { money: 0, items: 0 };
-        return { weekKey, paid: type === 'money' ? data.money : data.items };
+      const countedWeeksSorted = countedWeeks.slice().sort(compareWeekKeys);
+      const previousCountedWeek = {};
+      countedWeeksSorted.forEach((weekKey, index) => {
+        previousCountedWeek[weekKey] = index > 0 ? countedWeeksSorted[index - 1] : null;
       });
+
+      const rawPaidByWeek = {};
+      countedWeeksSorted.forEach(weekKey => {
+        const data = (weeklyData[weekKey] && weeklyData[weekKey][id]) || { money: 0, items: 0 };
+        rawPaidByWeek[weekKey] = type === 'money' ? data.money : data.items;
+      });
+
+      const carrybacksRaw = getWeekCarrybacksForMember(id);
+      const validCarrybacks = {};
+      let carrybacksChanged = false;
+      Object.keys(carrybacksRaw).forEach(weekKey => {
+        const targetWeek = carrybacksRaw[weekKey];
+        if (countedWeeksSet.has(weekKey) && countedWeeksSet.has(targetWeek) && compareWeekKeys(targetWeek, weekKey) < 0) {
+          validCarrybacks[weekKey] = targetWeek;
+        } else {
+          carrybacksChanged = true;
+        }
+      });
+      if (carrybacksChanged) {
+        setWeekCarrybacksForMember(id, validCarrybacks);
+        saveSettings(SETTINGS);
+      }
+
+      const paidByWeek = Object.assign({}, rawPaidByWeek);
+      const carrybackSources = {};
+      Object.keys(validCarrybacks).forEach(sourceWeek => {
+        const targetWeek = validCarrybacks[sourceWeek];
+        if (!targetWeek) {
+          return;
+        }
+        const amount = paidByWeek[sourceWeek] || 0;
+        if (amount > 0) {
+          if (!carrybackSources[targetWeek]) {
+            carrybackSources[targetWeek] = [];
+          }
+          carrybackSources[targetWeek].push({ source: sourceWeek, amount });
+        }
+        paidByWeek[targetWeek] = (paidByWeek[targetWeek] || 0) + (paidByWeek[sourceWeek] || 0);
+        paidByWeek[sourceWeek] = 0;
+      });
+
+      const countedWeekEntries = countedWeeksSorted.map(weekKey => ({
+        weekKey,
+        paid: paidByWeek[weekKey] || 0
+      }));
 
       const totalPaid = countedWeekEntries.reduce((sum, entry) => sum + entry.paid, 0);
 
@@ -1086,22 +1203,26 @@
 
       displayWeeks.forEach(week => {
         const data = (weeklyData[week] && weeklyData[week][id]) || { money: 0, items: 0 };
-        const paid = type === 'money' ? data.money : data.items;
+        const rawPaid = type === 'money' ? data.money : data.items;
+        const countedPaid = paidByWeek[week] || 0;
+        const carrybackTarget = validCarrybacks[week] || null;
+        const carrybackSourcesHere = carrybackSources[week] || [];
         const isEffective = effectiveWeeks.includes(week);
         const isExcluded = exclusions.has(week);
         const isCounted = countedWeeksSet.has(week);
         let cellColor = '#222222';
         let cellText = '#888888';
         let symbol = '—';
-        const paidLabel = type === 'money' ? `$${paid.toLocaleString()}` : `${paid} ${SETTINGS.taxItemName}`;
+        const paidLabel = type === 'money' ? `$${countedPaid.toLocaleString()}` : `${countedPaid} ${SETTINGS.taxItemName}`;
+        const rawPaidLabel = type === 'money' ? `$${rawPaid.toLocaleString()}` : `${rawPaid} ${SETTINGS.taxItemName}`;
         const reqLabel = type === 'money' ? `$${req.amount.toLocaleString()}` : `${req.amount} ${SETTINGS.taxItemName}`;
         let title = `Paid ${paidLabel} / Required ${reqLabel}`;
         if (!isEffective) {
-          if (paid > 0) {
+          if (rawPaid > 0) {
             cellColor = '#113311';
             cellText = '#66ff66';
             symbol = '✅';
-            title = `No requirement for this week. Paid ${paidLabel}.`;
+            title = `No requirement for this week. Paid ${rawPaidLabel}.`;
           } else {
             title = 'No requirement for this week';
           }
@@ -1109,7 +1230,7 @@
           cellColor = '#333333';
           cellText = '#cccccc';
           symbol = '⏸';
-          title = `Week excluded from requirement. Paid ${paidLabel}. Click to include.`;
+          title = `Week excluded from requirement. Paid ${rawPaidLabel}. Click to include.`;
         } else {
           let met;
           if (req.amount <= 0) {
@@ -1117,19 +1238,33 @@
           } else if (isCounted && Object.prototype.hasOwnProperty.call(weekCoverageStatus, week)) {
             met = weekCoverageStatus[week];
           } else {
-            met = paid >= req.amount;
+            met = countedPaid >= req.amount;
           }
           cellColor = met ? '#003300' : '#3a0000';
           cellText = met ? '#66ff66' : '#ff6666';
           symbol = met ? '✅' : '❌';
-          if (met && paid < req.amount) {
+          if (met && countedPaid < req.amount) {
             title = `Paid ${paidLabel} / Required ${reqLabel}. Requirement covered by cumulative payments. Click to exclude.`;
           } else {
             title = `Paid ${paidLabel} / Required ${reqLabel}. Click to exclude.`;
           }
         }
+        if (carrybackTarget) {
+          symbol = '↩️';
+          cellColor = '#2d1f00';
+          cellText = '#ffcc66';
+          const baseMessage = countedPaid > 0 ? `Counted ${paidLabel}` : 'No counted payment';
+          title = `${baseMessage}. Carried ${rawPaidLabel} back to ${carrybackTarget}. Alt+click to restore this week.`;
+        } else if (carrybackSourcesHere.length > 0) {
+          const parts = carrybackSourcesHere
+            .sort((a, b) => compareWeekKeys(a.source, b.source))
+            .map(entry => `${entry.source} (${type === 'money' ? `$${entry.amount.toLocaleString()}` : `${entry.amount} ${SETTINGS.taxItemName}`})`);
+          title += `. Includes carryback from ${parts.join(', ')}.`;
+        }
         const cursor = isEffective ? 'pointer' : 'default';
-        html += `<td class="tax-week-cell" data-employee="${id}" data-week="${week}" data-effective="${isEffective}" data-counted="${isCounted}" style="background:${cellColor};color:${cellText};border:1px solid #444;cursor:${cursor};" title="${title}">${symbol}</td>`;
+        const carryTargetAttr = carrybackTarget || (isCounted ? (previousCountedWeek[week] || '') : '');
+        const carryActiveAttr = carrybackTarget ? 'true' : 'false';
+        html += `<td class="tax-week-cell" data-employee="${id}" data-week="${week}" data-effective="${isEffective}" data-counted="${isCounted}" data-carry-target="${carryTargetAttr || ''}" data-carry-active="${carryActiveAttr}" style="background:${cellColor};color:${cellText};border:1px solid #444;cursor:${cursor};" title="${title}">${symbol}</td>`;
       });
 
       const expected = countedWeeks.length * req.amount;
@@ -1161,7 +1296,7 @@
 
     html += '</tbody></table></div>';
 
-    const tipHtml = '<div style="margin-top:8px;color:#ccc;font-size:11px;">Click a week cell to exclude/include it for that employee. Excluded weeks show the ⏸ icon.</div>';
+    const tipHtml = '<div style="margin-top:8px;color:#ccc;font-size:11px;">Click a week cell to exclude/include it for that employee. Alt+click to carry a payment back to the previous counted week. Excluded weeks show the ⏸ icon.</div>';
 
     let summaryHtml = '<div style="margin-top:12px;padding:10px;background:#222;border:1px solid #444;border-radius:6px;">';
     summaryHtml += '<strong style="color:#fff;">Summary</strong><br>';
@@ -1198,13 +1333,33 @@
     overviewView.innerHTML = tipHtml + html + summaryHtml + reminderHtml;
 
     overviewView.querySelectorAll('.tax-week-cell').forEach(cell => {
-      cell.addEventListener('click', () => {
+      cell.addEventListener('click', event => {
         if (cell.getAttribute('data-effective') !== 'true') {
           return;
         }
         const week = cell.getAttribute('data-week');
         const empId = cell.getAttribute('data-employee');
-        toggleWeekExclusionForMember(empId, week);
+        const isCounted = cell.getAttribute('data-counted') === 'true';
+        if (event.altKey) {
+          event.preventDefault();
+          const isActive = cell.getAttribute('data-carry-active') === 'true';
+          if (isActive) {
+            updateWeekCarrybackForMember(empId, week, null);
+          } else {
+            if (!isCounted) {
+              alert('Only counted weeks can carry payments back.');
+              return;
+            }
+            const targetWeek = cell.getAttribute('data-carry-target');
+            if (!targetWeek) {
+              alert('No previous counted week is available for this employee.');
+              return;
+            }
+            updateWeekCarrybackForMember(empId, week, targetWeek);
+          }
+        } else {
+          toggleWeekExclusionForMember(empId, week);
+        }
         renderOverview(lastWeeklyDataCache, lastEmployeesCache);
         if (SETTINGS.enableEmployeeMenu) {
           renderEmployeeMenu(lastEmployeesCache);
