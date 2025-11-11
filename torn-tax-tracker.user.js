@@ -1759,7 +1759,10 @@
       return nameA.localeCompare(nameB);
     });
 
-    let html = '<div style="color:#ccc;font-size:11px;margin-bottom:10px;">Entries use your local timezone. Only payments on or after each employee\'s requirement start are listed.</div>';
+    let html = '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:10px;">';
+    html += '<div style="color:#ccc;font-size:11px;flex:1 1 260px;">Entries use your local timezone. Only payments on or after each employee\'s requirement start are listed.</div>';
+    html += '<button id="refreshPayments" style="background:#2e8b57;color:white;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;">Refresh payments</button>';
+    html += '</div>';
     html += '<div style="display:flex;flex-direction:column;gap:12px;">';
 
     sortedIds.forEach(id => {
@@ -1903,6 +1906,20 @@
         applyPaymentExclusion(employeeId, paymentId, nextExcluded);
       });
     });
+    const refreshButton = paymentsView.querySelector('#refreshPayments');
+    if (refreshButton) {
+      refreshButton.addEventListener('click', async () => {
+        refreshButton.disabled = true;
+        const originalText = refreshButton.textContent;
+        refreshButton.textContent = 'Refreshing...';
+        try {
+          await fetchData();
+        } finally {
+          refreshButton.disabled = false;
+          refreshButton.textContent = originalText;
+        }
+      });
+    }
   }
 
   function renderEmployeeMenu(employees) {
