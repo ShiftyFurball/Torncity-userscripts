@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      7.11
+// @version      7.12
 // @description  Track weekly company tax from employees in Torn with Torn-styled table, draggable/resizable panel, reminders, overpayment tracking, totals row, and Test Mode.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -38,6 +38,7 @@
     allowPrepaymentRollover: true,
     taxItemName: "Xanax",
     reminderMessage: "Hi {name}, you currently owe {amount}. Please pay as soon as possible. Thanks!",
+    excludedPayments: {},
     enableEmployeeMenu: false,
     // Legacy field kept for backwards compatibility with older saves
     requiredTax: 10000000
@@ -321,6 +322,9 @@
   if (!SETTINGS.memberWeekCarrybacks || typeof SETTINGS.memberWeekCarrybacks !== "object") {
     SETTINGS.memberWeekCarrybacks = {};
   }
+  if (!SETTINGS.excludedPayments || typeof SETTINGS.excludedPayments !== "object") {
+    SETTINGS.excludedPayments = {};
+  }
   if (typeof SETTINGS.defaultRequirementReset !== "string") {
     SETTINGS.defaultRequirementReset = `${SETTINGS.startYear}-W${SETTINGS.startWeek}`;
   }
@@ -357,6 +361,140 @@
       return SETTINGS.defaultRequirementReset;
     }
     return `${SETTINGS.startYear}-W${SETTINGS.startWeek}`;
+  }
+
+  function ensureExcludedPaymentsContainer() {
+    if (!SETTINGS.excludedPayments || typeof SETTINGS.excludedPayments !== "object") {
+      SETTINGS.excludedPayments = {};
+    }
+    return SETTINGS.excludedPayments;
+  }
+
+  function isPaymentExcluded(employeeId, paymentId) {
+    if (!employeeId || !paymentId) {
+      return false;
+    }
+    const container = ensureExcludedPaymentsContainer();
+    if (!container[employeeId] || typeof container[employeeId] !== "object") {
+      return false;
+    }
+    return !!container[employeeId][paymentId];
+  }
+
+  function setPaymentExcluded(employeeId, paymentId, excluded) {
+    if (!employeeId || !paymentId) {
+      return;
+    }
+    const container = ensureExcludedPaymentsContainer();
+    if (!container[employeeId] || typeof container[employeeId] !== "object") {
+      container[employeeId] = {};
+    }
+    if (excluded) {
+      container[employeeId][paymentId] = true;
+    } else {
+      delete container[employeeId][paymentId];
+      if (Object.keys(container[employeeId]).length === 0) {
+        delete container[employeeId];
+      }
+    }
+  }
+
+  function applyPaymentExclusion(employeeId, paymentId, excluded) {
+    if (!employeeId || !paymentId) {
+      return;
+    }
+    if (!lastPaymentHistoryCache || !lastWeeklyDataCache) {
+      return;
+    }
+    const entries = lastPaymentHistoryCache[employeeId];
+    if (!Array.isArray(entries)) {
+      return;
+    }
+    const targetId = String(paymentId);
+    const entry = entries.find(item => {
+      if (!item || typeof item !== "object") {
+        return false;
+      }
+      const entryId = item.id || item.logId;
+      if (entryId !== undefined && entryId !== null) {
+        return String(entryId) === targetId;
+      }
+      return false;
+    });
+    if (!entry) {
+      return;
+    }
+    const alreadyExcluded = !!entry.excluded;
+    if (alreadyExcluded === excluded) {
+      return;
+    }
+    entry.excluded = excluded;
+    const weekKey = entry.weekKey;
+    if (!weekKey) {
+      refreshViewsAfterPaymentChange();
+      return;
+    }
+    if (!lastWeeklyDataCache[weekKey]) {
+      lastWeeklyDataCache[weekKey] = {};
+    }
+    if (!lastWeeklyDataCache[weekKey][employeeId]) {
+      lastWeeklyDataCache[weekKey][employeeId] = { money: 0, items: 0 };
+    }
+    const bucket = lastWeeklyDataCache[weekKey][employeeId];
+    const amount = Number(entry.amount) || 0;
+    if (amount > 0) {
+      if (entry.type === 'money') {
+        const nextValue = (Number(bucket.money) || 0) + (excluded ? -amount : amount);
+        bucket.money = Math.max(0, nextValue);
+      } else if (entry.type === 'item') {
+        const nextValue = (Number(bucket.items) || 0) + (excluded ? -amount : amount);
+        bucket.items = Math.max(0, nextValue);
+      }
+    }
+    refreshViewsAfterPaymentChange();
+  }
+
+  function refreshViewsAfterPaymentChange() {
+    const employees = lastEmployeesCache || {};
+    renderOverview(lastWeeklyDataCache, employees);
+    if (SETTINGS.enableEmployeeMenu) {
+      renderEmployeeMenu(employees);
+    }
+    renderPaymentHistory(lastPaymentHistoryCache, employees);
+  }
+
+  function syncExcludedPaymentsWithWeeklyData(paymentHistory, weeklyData) {
+    if (!paymentHistory || typeof paymentHistory !== 'object' || !weeklyData || typeof weeklyData !== 'object') {
+      return;
+    }
+    Object.keys(paymentHistory).forEach(employeeId => {
+      const entries = paymentHistory[employeeId];
+      if (!Array.isArray(entries)) {
+        return;
+      }
+      entries.forEach(entry => {
+        if (!entry || !entry.excluded) {
+          return;
+        }
+        const weekKey = entry.weekKey;
+        if (!weekKey) {
+          return;
+        }
+        if (!weeklyData[weekKey]) {
+          weeklyData[weekKey] = {};
+        }
+        if (!weeklyData[weekKey][employeeId]) {
+          weeklyData[weekKey][employeeId] = { money: 0, items: 0 };
+        }
+        const bucket = weeklyData[weekKey][employeeId];
+        const amount = Number(entry.amount) || 0;
+        if (entry.type === 'money') {
+          bucket.money = Math.max(0, (Number(bucket.money) || 0) - amount);
+        } else if (entry.type === 'item') {
+          bucket.items = Math.max(0, (Number(bucket.items) || 0) - amount);
+        }
+      });
+    });
   }
 
   function getExcludedWeeksForMember(id) {
@@ -905,6 +1043,13 @@
           }
         });
       }
+      if (SETTINGS.excludedPayments) {
+        Object.keys(SETTINGS.excludedPayments).forEach(id => {
+          if (!employees[id]) {
+            delete SETTINGS.excludedPayments[id];
+          }
+        });
+      }
 
       const defaults = getDefaultRequirement();
       Object.keys(employees).forEach(id => {
@@ -944,6 +1089,8 @@
         const logType = Number(log.log);
         const logCategory = Number(log.category);
 
+        const logId = String(id);
+
         let senderId = findEmployeeIdFromLog(log, employees, employeeNameIndex);
         if (!senderId && usesItemTracking && (logType === 4102 || logType === 4103)) {
           const directId = String(log?.data?.sender || log?.data?.receiver || "");
@@ -966,14 +1113,19 @@
         if (logType === 4800 || logType === 4810) {
           const amount = Number(log?.data?.money ?? log?.data?.amount ?? 0);
           if (Number.isFinite(amount)) {
-            weeklyData[weekKey][senderId].money += amount;
+            const excluded = isPaymentExcluded(senderId, logId);
+            if (!excluded && amount > 0) {
+              weeklyData[weekKey][senderId].money += amount;
+            }
             if (amount > 0) {
               paymentHistory[senderId].push({
+                id: logId,
                 timestamp: Number(log.timestamp) * 1000,
                 weekKey,
                 type: 'money',
                 amount,
-                medium: describeLogMedium(log)
+                medium: describeLogMedium(log),
+                excluded
               });
             }
           }
@@ -982,13 +1134,18 @@
           const targetName = SETTINGS.taxItemName || "Xanax";
           const qty = getItemQuantityFromLog(log, targetName, targetId);
           if (qty > 0) {
-            weeklyData[weekKey][senderId].items += qty;
+            const excluded = isPaymentExcluded(senderId, logId);
+            if (!excluded) {
+              weeklyData[weekKey][senderId].items += qty;
+            }
             paymentHistory[senderId].push({
+              id: logId,
               timestamp: Number(log.timestamp) * 1000,
               weekKey,
               type: 'item',
               amount: qty,
-              medium: describeLogMedium(log)
+              medium: describeLogMedium(log),
+              excluded
             });
           }
         } else if (usesItemTracking && (logType === 4102 || logType === 4103)) {
@@ -999,23 +1156,31 @@
             items.forEach(it => {
               if (it && Number(it.id) === 206 && Number.isFinite(Number(it.qty))) {
                 const qty = Number(it.qty);
-                weeklyData[weekKey][senderId].items += qty;
+                const excluded = isPaymentExcluded(senderId, logId);
+                if (!excluded) {
+                  weeklyData[weekKey][senderId].items += qty;
+                }
                 totalAdded += qty;
               }
             });
             if (totalAdded > 0) {
+              const excluded = isPaymentExcluded(senderId, logId);
               paymentHistory[senderId].push({
+                id: logId,
                 timestamp: Number(log.timestamp) * 1000,
                 weekKey,
                 type: 'item',
                 amount: totalAdded,
-                medium: describeLogMedium(log)
+                medium: describeLogMedium(log),
+                excluded
               });
             }
           }
         }
       }
     }
+
+    syncExcludedPaymentsWithWeeklyData(paymentHistory, weeklyData);
 
     lastEmployeesCache = employees;
     lastWeeklyDataCache = weeklyData;
@@ -1664,10 +1829,14 @@
         html += '<th style="padding:6px;border:1px solid #333;text-align:left;">Type</th>';
         html += '<th style="padding:6px;border:1px solid #333;text-align:left;">Amount</th>';
         html += '<th style="padding:6px;border:1px solid #333;text-align:left;">Details</th>';
+        html += '<th style="padding:6px;border:1px solid #333;text-align:left;">Counted?</th>';
+        html += '<th style="padding:6px;border:1px solid #333;text-align:left;">Action</th>';
         html += '</tr></thead><tbody>';
 
         entries.forEach((entry, index) => {
-          const rowBg = index % 2 === 0 ? '#1b1b1b' : '#242424';
+          const baseBg = index % 2 === 0 ? '#1b1b1b' : '#242424';
+          const excluded = !!entry.excluded;
+          const rowBg = excluded ? '#2a1919' : baseBg;
           const dateLabel = formatTimestamp(entry.timestamp) || 'Unknown';
           const weekLabel = entry.weekKey || '—';
           const typeLabel = entry.type === 'item' ? `${SETTINGS.taxItemName}` : 'Money';
@@ -1675,12 +1844,32 @@
             ? `${(Number.isFinite(entry.amount) ? entry.amount : 0).toLocaleString()} ${SETTINGS.taxItemName}`
             : `$${Number.isFinite(entry.amount) ? entry.amount.toLocaleString() : '0'}`;
           const detailsLabel = entry.medium ? escapeHtml(entry.medium) : '';
-          html += `<tr style="background:${rowBg};color:#ccc;">`;
-          html += `<td style="padding:6px;border:1px solid #333;">${escapeHtml(dateLabel)}</td>`;
-          html += `<td style="padding:6px;border:1px solid #333;">${escapeHtml(weekLabel)}</td>`;
-          html += `<td style="padding:6px;border:1px solid #333;">${escapeHtml(typeLabel)}</td>`;
-          html += `<td style="padding:6px;border:1px solid #333;">${escapeHtml(amountLabel)}</td>`;
-          html += `<td style="padding:6px;border:1px solid #333;">${detailsLabel || '<span style="color:#666;">&mdash;</span>'}</td>`;
+          const textColor = excluded ? '#ffaaaa' : '#ccc';
+          const paymentId = entry && (entry.id || entry.logId)
+            ? String(entry.id || entry.logId)
+            : `${entry.weekKey || 'unknown'}-${entry.type || 'unknown'}-${entry.timestamp || index}`;
+          if (entry && !entry.id) {
+            entry.id = paymentId;
+          }
+          const countedLabel = excluded ? '<span style="color:#ff6666;">No</span>' : '<span style="color:#66ff66;">Yes</span>';
+          const actionLabel = excluded ? 'Include' : 'Exclude';
+          const actionBg = excluded ? '#2e8b57' : '#b34747';
+          const actionTitle = excluded ? 'Include this payment in tax totals' : 'Exclude this payment from tax totals';
+          const buttonStyle = `background:${actionBg};color:white;border:none;padding:4px 8px;border-radius:4px;cursor:${paymentId ? 'pointer' : 'not-allowed'};`;
+          html += `<tr style="background:${rowBg};color:${textColor};">`;
+          html += `<td style="padding:6px;border:1px solid #333;color:${textColor};">${escapeHtml(dateLabel)}</td>`;
+          html += `<td style="padding:6px;border:1px solid #333;color:${textColor};">${escapeHtml(weekLabel)}</td>`;
+          html += `<td style="padding:6px;border:1px solid #333;color:${textColor};">${escapeHtml(typeLabel)}</td>`;
+          html += `<td style="padding:6px;border:1px solid #333;color:${textColor};">${escapeHtml(amountLabel)}</td>`;
+          html += `<td style="padding:6px;border:1px solid #333;color:${textColor};">${detailsLabel || '<span style="color:#888;">&mdash;</span>'}</td>`;
+          html += `<td style="padding:6px;border:1px solid #333;color:${textColor};">${countedLabel}</td>`;
+          if (paymentId) {
+            html += `<td style="padding:6px;border:1px solid #333;">
+              <button class="toggle-payment-exclusion" data-employee="${escapeHtml(String(id))}" data-payment="${escapeHtml(paymentId)}" data-excluded="${excluded}" title="${escapeHtml(actionTitle)}" style="${buttonStyle}">${escapeHtml(actionLabel)}</button>
+            </td>`;
+          } else {
+            html += '<td style="padding:6px;border:1px solid #333;color:#888;">Unavailable</td>';
+          }
           html += '</tr>';
         });
 
@@ -1702,6 +1891,18 @@
 
     html += '</div>';
     paymentsView.innerHTML = html;
+
+    paymentsView.querySelectorAll('.toggle-payment-exclusion').forEach(button => {
+      button.addEventListener('click', () => {
+        const employeeId = button.getAttribute('data-employee');
+        const paymentId = button.getAttribute('data-payment');
+        const currentlyExcluded = button.getAttribute('data-excluded') === 'true';
+        const nextExcluded = !currentlyExcluded;
+        setPaymentExcluded(employeeId, paymentId, nextExcluded);
+        saveSettings(SETTINGS);
+        applyPaymentExclusion(employeeId, paymentId, nextExcluded);
+      });
+    });
   }
 
   function renderEmployeeMenu(employees) {
@@ -2363,21 +2564,29 @@
           history[employeeId] = [];
         }
         if (Number.isFinite(totals.money) && totals.money > 0) {
+          const paymentId = `test-${employeeId}-${weekKey}-money`;
+          const excluded = isPaymentExcluded(employeeId, paymentId);
           history[employeeId].push({
+            id: paymentId,
             timestamp: baseTime,
             weekKey,
             type: 'money',
             amount: totals.money,
-            medium: 'Simulated payment (Test Mode)'
+            medium: 'Simulated payment (Test Mode)',
+            excluded
           });
         }
         if (Number.isFinite(totals.items) && totals.items > 0) {
+          const paymentId = `test-${employeeId}-${weekKey}-item`;
+          const excluded = isPaymentExcluded(employeeId, paymentId);
           history[employeeId].push({
+            id: paymentId,
             timestamp: baseTime + 60000,
             weekKey,
             type: 'item',
             amount: totals.items,
-            medium: 'Simulated item delivery (Test Mode)'
+            medium: 'Simulated item delivery (Test Mode)',
+            excluded
           });
         }
       });
