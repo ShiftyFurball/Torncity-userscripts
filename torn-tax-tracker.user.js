@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      7.13
+// @version      7.14
 // @description  Track weekly company tax from employees in Torn with Torn-styled table, draggable/resizable panel, reminders, overpayment tracking, totals row, and Test Mode.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -1760,7 +1760,7 @@
     });
 
     let html = '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:10px;">';
-    html += '<div style="color:#ccc;font-size:11px;flex:1 1 260px;">Entries use your local timezone. Only payments on or after each employee\'s requirement start are listed.</div>';
+    html += '<div style="color:#ccc;font-size:11px;flex:1 1 260px;">Entries use your local timezone. Payments are shown from the configured start week or the employee\'s join week, whichever is later. Carryback adjustments may display earlier weeks.</div>';
     html += '<button id="refreshPayments" style="background:#2e8b57;color:white;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;">Refresh payments</button>';
     html += '</div>';
     html += '<div style="display:flex;flex-direction:column;gap:12px;">';
@@ -1768,30 +1768,22 @@
     sortedIds.forEach(id => {
       const employeeRecord = COMPANY_MEMBERS[id] || {};
       const employeeName = getEmployeeName(employeeRecord) || 'Unknown';
-      const requirement = getMemberRequirement(id);
-      const requirementStart = requirement ? getRequirementStartWeek(id, requirement) : null;
       const joinWeekFromDays = getEmployeeJoinWeekFromDays(employeeRecord);
       const joinWeek = joinWeekFromDays || getEmployeeJoinWeek(employeeRecord);
       const joinWeekKey = Array.isArray(joinWeek) ? formatWeekKey(joinWeek[0], joinWeek[1]) : null;
       const startKey = `${SETTINGS.startYear}-W${SETTINGS.startWeek}`;
 
-      const baselineCandidates = [startKey];
-      if (typeof requirementStart === 'string' && parseWeekKey(requirementStart)) {
-        baselineCandidates.push(requirementStart);
-      }
-      if (typeof joinWeekKey === 'string' && parseWeekKey(joinWeekKey)) {
-        baselineCandidates.push(joinWeekKey);
+      let baselineKey = startKey;
+      if (typeof joinWeekKey === 'string' && parseWeekKey(joinWeekKey) && compareWeekKeys(joinWeekKey, baselineKey) > 0) {
+        baselineKey = joinWeekKey;
       }
 
-      let baselineKey = baselineCandidates.filter(Boolean).reduce((latest, candidate) => {
-        if (!latest) {
-          return candidate;
+      const carrybacks = getWeekCarrybacksForMember(id);
+      Object.values(carrybacks).forEach(targetWeek => {
+        if (typeof targetWeek === 'string' && parseWeekKey(targetWeek) && compareWeekKeys(targetWeek, baselineKey) < 0) {
+          baselineKey = targetWeek;
         }
-        return compareWeekKeys(candidate, latest) > 0 ? candidate : latest;
-      }, null);
-      if (!baselineKey || !parseWeekKey(baselineKey)) {
-        baselineKey = startKey;
-      }
+      });
 
       const entries = (paymentHistory && paymentHistory[id] ? paymentHistory[id] : []).filter(entry => {
         if (!entry || typeof entry.weekKey !== 'string') {
