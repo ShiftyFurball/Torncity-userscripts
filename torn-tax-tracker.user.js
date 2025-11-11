@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      7.8
+// @version      7.10
 // @description  Track weekly company tax from employees in Torn with Torn-styled table, draggable/resizable panel, reminders, overpayment tracking, totals row, and Test Mode.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -35,6 +35,7 @@
     defaultMoneyTax: 10000000,
     defaultItemTax: 7,
     defaultRequirementType: "money",
+    allowPrepaymentRollover: true,
     taxItemName: "Xanax",
     reminderMessage: "Hi {name}, you currently owe {amount}. Please pay as soon as possible. Thanks!",
     enableEmployeeMenu: false,
@@ -117,6 +118,10 @@
       return pa[0] - pb[0];
     }
     return pa[1] - pb[1];
+  }
+
+  function formatWeekKey(year, week) {
+    return `${year}-W${week}`;
   }
 
   function isWeekOnOrAfter(candidate, baseline) {
@@ -608,7 +613,8 @@
       </label><br><br>
       <label><input id="manualMode" type="checkbox" ${SETTINGS.manualMode ? "checked" : ""}> Manual Employees Mode</label><br><br>
       <label><input id="testMode" type="checkbox" ${SETTINGS.testMode ? "checked" : ""}> Enable Test Mode (fake data)</label><br><br>
-      <label><input id="enableEmployeeMenu" type="checkbox" ${SETTINGS.enableEmployeeMenu ? "checked" : ""}> Enable Employees Menu</label>
+      <label><input id="enableEmployeeMenu" type="checkbox" ${SETTINGS.enableEmployeeMenu ? "checked" : ""}> Enable Employees Menu</label><br><br>
+      <label><input id="allowRollover" type="checkbox" ${SETTINGS.allowPrepaymentRollover !== false ? "checked" : ""}> Allow prepayments to auto-cover future weeks</label>
 
       <fieldset style="border:1px solid #444;border-radius:6px;padding:10px;margin-top:12px;">
         <legend style="padding:0 6px;color:#0f0;">Defaults for New Employees</legend>
@@ -688,6 +694,7 @@
       SETTINGS.manualMode = editor.querySelector("#manualMode").checked;
       SETTINGS.testMode = editor.querySelector("#testMode").checked;
       SETTINGS.enableEmployeeMenu = editor.querySelector("#enableEmployeeMenu").checked;
+      SETTINGS.allowPrepaymentRollover = editor.querySelector("#allowRollover").checked;
       const apiInput = editor.querySelector("#setApiKey");
       SETTINGS.apiKey = apiInput ? apiInput.value.trim() : SETTINGS.apiKey;
       const typeSelect = editor.querySelector("#setDefaultRequirementType");
@@ -1076,8 +1083,10 @@
 
     let grandMoneyPaid = 0;
     let grandMoneyExpected = 0;
+    let grandMoneyBalance = 0;
     let grandItemPaid = 0;
     let grandItemExpected = 0;
+    let grandItemBalance = 0;
     const owingList = [];
 
     let html = '<div style="overflow:auto;"><table style="width:100%; border-collapse: collapse; text-align:center; font-size:12px; background:#1b1b1b; color:#ccc;">';
@@ -1096,27 +1105,32 @@
       const employeeName = getEmployeeName(employeeRecord) || 'Unknown';
       const rowBg = (idx % 2 === 0) ? '#202020' : '#262626';
       const joinWeek = getEmployeeJoinWeekFromDays(employeeRecord) || getEmployeeJoinWeek(employeeRecord);
-      let effectiveWeeks = allWeeks.slice();
-
-      if (joinWeek) {
-        const [hireYear, hireWeek] = joinWeek;
-        // keep only weeks on/after hire week
-        effectiveWeeks = effectiveWeeks.filter(weekKey => {
-          const [year, week] = weekKey.split('-W').map(Number);
-          return year > hireYear || (year === hireYear && week >= hireWeek);
-        });
-      }
-
-      const startKey = `${SETTINGS.startYear}-W${SETTINGS.startWeek}`;
-      effectiveWeeks = effectiveWeeks.filter(weekKey => isWeekOnOrAfter(weekKey, startKey));
-
+      const joinWeekKey = joinWeek ? formatWeekKey(joinWeek[0], joinWeek[1]) : null;
       const requirementStart = getRequirementStartWeek(id, req);
-      if (requirementStart) {
-        effectiveWeeks = effectiveWeeks.filter(weekKey => isWeekOnOrAfter(weekKey, requirementStart));
-      }
+      const startKey = `${SETTINGS.startYear}-W${SETTINGS.startWeek}`;
+      const weekRequirementReasons = {};
+      const effectiveWeeks = [];
 
+      allWeeks.forEach(weekKey => {
+        const reasons = [];
+        if (joinWeekKey && compareWeekKeys(weekKey, joinWeekKey) < 0) {
+          reasons.push(`Employee joined ${joinWeekKey}`);
+        }
+        if (!isWeekOnOrAfter(weekKey, startKey)) {
+          reasons.push(`Before start week ${startKey}`);
+        }
+        if (requirementStart && !isWeekOnOrAfter(weekKey, requirementStart)) {
+          reasons.push(`Requirement begins ${requirementStart}`);
+        }
+        weekRequirementReasons[weekKey] = reasons;
+        if (reasons.length === 0) {
+          effectiveWeeks.push(weekKey);
+        }
+      });
+
+      const effectiveWeekSet = new Set(effectiveWeeks);
       const exclusions = new Set(
-        getExcludedWeeksForMember(id).filter(weekKey => effectiveWeeks.includes(weekKey))
+        getExcludedWeeksForMember(id).filter(weekKey => effectiveWeekSet.has(weekKey))
       );
 
       const countedWeeks = effectiveWeeks.filter(weekKey => !exclusions.has(weekKey));
@@ -1172,30 +1186,39 @@
         paid: paidByWeek[weekKey] || 0
       }));
 
+      const allowRollover = SETTINGS.allowPrepaymentRollover !== false;
       const totalPaid = countedWeekEntries.reduce((sum, entry) => sum + entry.paid, 0);
-
+      const shortfallTotal = allowRollover ? 0 : countedWeekEntries.reduce((sum, entry) => {
+        return sum + Math.max(req.amount - entry.paid, 0);
+      }, 0);
       const weekCoverageStatus = {};
       if (req.amount <= 0) {
         countedWeekEntries.forEach(entry => {
           weekCoverageStatus[entry.weekKey] = true;
         });
       } else if (countedWeekEntries.length > 0) {
-        const prefixTotals = [];
-        let runningTotal = 0;
-        countedWeekEntries.forEach((entry, index) => {
-          runningTotal += entry.paid;
-          prefixTotals[index] = runningTotal;
-        });
-        const coverageCounts = prefixTotals.map(total => Math.floor(total / req.amount));
-        const maxCoverageFromIndex = new Array(coverageCounts.length);
-        let runningMax = 0;
-        for (let i = coverageCounts.length - 1; i >= 0; i--) {
-          runningMax = Math.max(runningMax, coverageCounts[i]);
-          maxCoverageFromIndex[i] = runningMax;
+        if (allowRollover) {
+          const prefixTotals = [];
+          let runningTotal = 0;
+          countedWeekEntries.forEach((entry, index) => {
+            runningTotal += entry.paid;
+            prefixTotals[index] = runningTotal;
+          });
+          const coverageCounts = prefixTotals.map(total => Math.floor(total / req.amount));
+          const maxCoverageFromIndex = new Array(coverageCounts.length);
+          let runningMax = 0;
+          for (let i = coverageCounts.length - 1; i >= 0; i--) {
+            runningMax = Math.max(runningMax, coverageCounts[i]);
+            maxCoverageFromIndex[i] = runningMax;
+          }
+          countedWeekEntries.forEach((entry, index) => {
+            weekCoverageStatus[entry.weekKey] = maxCoverageFromIndex[index] >= (index + 1);
+          });
+        } else {
+          countedWeekEntries.forEach(entry => {
+            weekCoverageStatus[entry.weekKey] = entry.paid >= req.amount;
+          });
         }
-        countedWeekEntries.forEach((entry, index) => {
-          weekCoverageStatus[entry.weekKey] = maxCoverageFromIndex[index] >= (index + 1);
-        });
       }
 
       html += `<tr style="background:${rowBg};">`;
@@ -1207,7 +1230,7 @@
         const countedPaid = paidByWeek[week] || 0;
         const carrybackTarget = validCarrybacks[week] || null;
         const carrybackSourcesHere = carrybackSources[week] || [];
-        const isEffective = effectiveWeeks.includes(week);
+        const isEffective = effectiveWeekSet.has(week);
         const isExcluded = exclusions.has(week);
         const isCounted = countedWeeksSet.has(week);
         let cellColor = '#222222';
@@ -1216,15 +1239,33 @@
         const paidLabel = type === 'money' ? `$${countedPaid.toLocaleString()}` : `${countedPaid} ${SETTINGS.taxItemName}`;
         const rawPaidLabel = type === 'money' ? `$${rawPaid.toLocaleString()}` : `${rawPaid} ${SETTINGS.taxItemName}`;
         const reqLabel = type === 'money' ? `$${req.amount.toLocaleString()}` : `${req.amount} ${SETTINGS.taxItemName}`;
+        const rawMoney = Number(data.money) || 0;
+        const rawItems = Number(data.items) || 0;
+        const paymentMode = rawMoney > 0 && rawItems > 0 ? 'mixed' : rawMoney > 0 ? 'money' : rawItems > 0 ? 'item' : 'none';
+        const mediumParts = [];
+        if (rawMoney > 0) {
+          mediumParts.push(`Money: $${rawMoney.toLocaleString()}`);
+        }
+        if (rawItems > 0) {
+          mediumParts.push(`${SETTINGS.taxItemName}: ${rawItems}`);
+        }
+        const mediumSuffix = mediumParts.length ? ` Received this week — ${mediumParts.join('; ')}.` : '';
+        let mediumDetailsAdded = false;
         let title = `Paid ${paidLabel} / Required ${reqLabel}`;
         if (!isEffective) {
-          if (rawPaid > 0) {
+          if (mediumParts.length > 0) {
             cellColor = '#113311';
             cellText = '#66ff66';
             symbol = '✅';
-            title = `No requirement for this week. Paid ${rawPaidLabel}.`;
+            const reasons = weekRequirementReasons[week] || [];
+            const reasonText = reasons.length ? ` (${reasons.join('; ')})` : '';
+            const paymentSummary = mediumParts.join('; ');
+            title = `No requirement for this week${reasonText}. Received ${paymentSummary}.`;
+            mediumDetailsAdded = true;
           } else {
-            title = 'No requirement for this week';
+            const reasons = weekRequirementReasons[week] || [];
+            const reasonText = reasons.length ? ` (${reasons.join('; ')})` : '';
+            title = `No requirement for this week${reasonText}.`;
           }
         } else if (isExcluded) {
           cellColor = '#333333';
@@ -1240,14 +1281,52 @@
           } else {
             met = countedPaid >= req.amount;
           }
-          cellColor = met ? '#003300' : '#3a0000';
-          cellText = met ? '#66ff66' : '#ff6666';
-          symbol = met ? '✅' : '❌';
-          if (met && countedPaid < req.amount) {
-            title = `Paid ${paidLabel} / Required ${reqLabel}. Requirement covered by cumulative payments. Click to exclude.`;
+          if (met) {
+            symbol = '✅';
+            if (paymentMode === 'item') {
+              cellColor = '#002244';
+              cellText = '#66ccff';
+            } else if (paymentMode === 'mixed') {
+              cellColor = '#2b1f44';
+              cellText = '#d1b3ff';
+            } else if (paymentMode === 'money') {
+              cellColor = '#003300';
+              cellText = '#66ff66';
+            } else {
+              cellColor = '#2f2f00';
+              cellText = '#ffef66';
+            }
+            if (allowRollover && countedPaid < req.amount) {
+              title = `Paid ${paidLabel} / Required ${reqLabel}. Requirement covered by cumulative payments. Click to exclude.`;
+            } else if (!allowRollover && countedPaid > req.amount) {
+              title = `Paid ${paidLabel} / Required ${reqLabel}. Extra paid will not auto-cover future weeks. Click to exclude.`;
+            } else {
+              title = `Paid ${paidLabel} / Required ${reqLabel}. Click to exclude.`;
+            }
           } else {
-            title = `Paid ${paidLabel} / Required ${reqLabel}. Click to exclude.`;
+            symbol = '❌';
+            if (paymentMode === 'item' && type === 'money') {
+              cellColor = '#331133';
+              cellText = '#ff99ff';
+              title = `Paid ${paidLabel} / Required ${reqLabel}. Money is required for this week. Click to exclude.`;
+            } else if (paymentMode === 'money' && type === 'item') {
+              cellColor = '#003344';
+              cellText = '#66ccff';
+              title = `Paid ${paidLabel} / Required ${reqLabel}. ${SETTINGS.taxItemName} is required for this week. Click to exclude.`;
+            } else if (paymentMode === 'mixed') {
+              cellColor = '#33220d';
+              cellText = '#ffcc88';
+              title = `Paid ${paidLabel} / Required ${reqLabel}. Partial payment received. Click to exclude.`;
+            } else {
+              cellColor = '#3a0000';
+              cellText = '#ff6666';
+              title = `Paid ${paidLabel} / Required ${reqLabel}. Click to exclude.`;
+            }
           }
+        }
+        if (!mediumDetailsAdded && mediumSuffix) {
+          title += mediumSuffix;
+          mediumDetailsAdded = true;
         }
         if (carrybackTarget) {
           symbol = '↩️';
@@ -1255,11 +1334,16 @@
           cellText = '#ffcc66';
           const baseMessage = countedPaid > 0 ? `Counted ${paidLabel}` : 'No counted payment';
           title = `${baseMessage}. Carried ${rawPaidLabel} back to ${carrybackTarget}. Alt+click to restore this week.`;
+          mediumDetailsAdded = false;
         } else if (carrybackSourcesHere.length > 0) {
           const parts = carrybackSourcesHere
             .sort((a, b) => compareWeekKeys(a.source, b.source))
             .map(entry => `${entry.source} (${type === 'money' ? `$${entry.amount.toLocaleString()}` : `${entry.amount} ${SETTINGS.taxItemName}`})`);
           title += `. Includes carryback from ${parts.join(', ')}.`;
+        }
+        if (!mediumDetailsAdded && mediumSuffix) {
+          title += mediumSuffix;
+          mediumDetailsAdded = true;
         }
         const cursor = isEffective ? 'pointer' : 'default';
         const carryTargetAttr = carrybackTarget || (isCounted ? (previousCountedWeek[week] || '') : '');
@@ -1268,16 +1352,19 @@
       });
 
       const expected = countedWeeks.length * req.amount;
-      const balance = totalPaid - expected;
+      const baseBalance = totalPaid - expected;
+      const balance = allowRollover ? baseBalance : (shortfallTotal > 0 ? -shortfallTotal : baseBalance);
       const totalLabel = type === 'money' ? `$${totalPaid.toLocaleString()}` : `${totalPaid} ${SETTINGS.taxItemName}`;
       html += `<td style="color:#66ff66;padding:6px;border:1px solid #444;position:sticky;right:140px;background:${rowBg};">${totalLabel}</td>`;
 
       if (type === 'money') {
         grandMoneyPaid += totalPaid;
         grandMoneyExpected += expected;
+        grandMoneyBalance += balance;
       } else {
         grandItemPaid += totalPaid;
         grandItemExpected += expected;
+        grandItemBalance += balance;
       }
 
       if (balance < 0) {
@@ -1296,17 +1383,17 @@
 
     html += '</tbody></table></div>';
 
-    const tipHtml = '<div style="margin-top:8px;color:#ccc;font-size:11px;">Click a week cell to exclude/include it for that employee. Alt+click to carry a payment back to the previous counted week. Excluded weeks show the ⏸ icon.</div>';
+    const tipHtml = '<div style="margin-top:8px;color:#ccc;font-size:11px;">Click a week cell to exclude/include it for that employee. Alt+click to carry a payment back to the previous counted week. Excluded weeks show the ⏸ icon.<br>Money ticks stay green, item ticks use blue, mixed weeks use purple, and rollover coverage without a direct payment is gold. Wrong-medium payments highlight in teal or pink so you can spot them quickly.</div>';
 
     let summaryHtml = '<div style="margin-top:12px;padding:10px;background:#222;border:1px solid #444;border-radius:6px;">';
     summaryHtml += '<strong style="color:#fff;">Summary</strong><br>';
     if (grandMoneyExpected > 0) {
-      const balance = grandMoneyPaid - grandMoneyExpected;
+      const balance = grandMoneyBalance;
       const balanceLabel = balance > 0 ? `Overpaid $${balance.toLocaleString()}` : balance < 0 ? `Owes $${Math.abs(balance).toLocaleString()}` : 'On Track';
       summaryHtml += `<span style="color:#ccc;">Money: Paid $${grandMoneyPaid.toLocaleString()} / Expected $${grandMoneyExpected.toLocaleString()} (${balanceLabel})</span><br>`;
     }
     if (grandItemExpected > 0) {
-      const balance = grandItemPaid - grandItemExpected;
+      const balance = grandItemBalance;
       const balanceLabel = balance > 0 ? `Overpaid ${balance} ${SETTINGS.taxItemName}` : balance < 0 ? `Owes ${Math.abs(balance)} ${SETTINGS.taxItemName}` : 'On Track';
       summaryHtml += `<span style="color:#ccc;">Items: Paid ${grandItemPaid} ${SETTINGS.taxItemName} / Expected ${grandItemExpected} ${SETTINGS.taxItemName} (${balanceLabel})</span><br>`;
     }
