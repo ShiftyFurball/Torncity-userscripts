@@ -327,6 +327,7 @@
 
   let lastEmployeesCache = {};
   let lastWeeklyDataCache = {};
+  let lastPaymentHistoryCache = {};
 
   function getDefaultRequirement() {
     const type = SETTINGS.defaultRequirementType === 'item' ? 'item' : 'money';
@@ -476,6 +477,7 @@
       <span style="font-weight:bold;flex:1;">Weekly Tax Tracker</span>
       <div style="display:flex;align-items:center;gap:6px;">
         <button id="openOverview" style="background:#2e8b57;color:white;border:none;padding:4px 8px;cursor:pointer;border-radius:4px;">Overview</button>
+        <button id="openPayments" style="background:#444;color:white;border:none;padding:4px 8px;cursor:pointer;border-radius:4px;">Payments</button>
         <button id="openEmployeeMenu" style="display:${SETTINGS.enableEmployeeMenu ? "inline-block" : "none"};background:#444;color:white;border:none;padding:4px 8px;cursor:pointer;border-radius:4px;">Employees</button>
         <button id="editSettings" style="background:#444;color:white;border:none;padding:4px 8px;cursor:pointer;border-radius:4px;">Settings</button>
         <button id="editEmployees" style="display:${SETTINGS.manualMode ? "inline-block" : "none"};background:#555;color:white;border:none;padding:4px 8px;cursor:pointer;border-radius:4px;">Edit Employees</button>
@@ -484,14 +486,17 @@
     </div>
     <div id="viewContainer" style="height:calc(100% - 44px);">
       <div id="overviewView" style="height:100%;overflow:auto;padding:10px;"></div>
+      <div id="paymentsView" style="display:none;height:100%;overflow:auto;padding:10px;"></div>
       <div id="employeeView" style="display:none;height:100%;overflow:auto;padding:10px;"></div>
     </div>
   `;
   document.body.appendChild(panel);
 
   const overviewView = panel.querySelector("#overviewView");
+  const paymentsView = panel.querySelector("#paymentsView");
   const employeeView = panel.querySelector("#employeeView");
   const overviewButton = panel.querySelector("#openOverview");
+  const paymentsButton = panel.querySelector("#openPayments");
   const employeeButton = panel.querySelector("#openEmployeeMenu");
   let currentView = "overview";
 
@@ -504,6 +509,12 @@
     if (overviewView) {
       overviewView.style.display = view === "overview" ? "block" : "none";
     }
+    if (paymentsView) {
+      paymentsView.style.display = view === "payments" ? "block" : "none";
+      if (view !== "payments") {
+        paymentsView.scrollTop = 0;
+      }
+    }
     if (employeeView) {
       employeeView.style.display = view === "employees" ? "block" : "none";
       if (view !== "employees") {
@@ -514,6 +525,10 @@
     if (overviewButton) {
       overviewButton.style.background = view === "overview" ? "#2e8b57" : "#444";
       overviewButton.style.color = "white";
+    }
+    if (paymentsButton) {
+      paymentsButton.style.background = view === "payments" ? "#2e8b57" : "#444";
+      paymentsButton.style.color = "white";
     }
     if (employeeButton) {
       employeeButton.style.background = view === "employees" ? "#2e8b57" : "#444";
@@ -541,6 +556,16 @@
       fetchData();
     }
   });
+  if (paymentsButton) {
+    paymentsButton.addEventListener("click", () => {
+      switchView("payments");
+      if (Object.keys(lastWeeklyDataCache).length === 0 && Object.keys(lastPaymentHistoryCache).length === 0) {
+        fetchData();
+      } else {
+        renderPaymentHistory(lastPaymentHistoryCache, lastEmployeesCache);
+      }
+    });
+  }
   if (employeeButton) {
     employeeButton.addEventListener("click", () => {
       switchView("employees");
@@ -824,11 +849,13 @@
   async function fetchData() {
     let employees = {};
     let weeklyData = {};
+    let paymentHistory = {};
 
     if (SETTINGS.testMode) {
       const fake = makeFakeData();
       employees = fake.employees;
       weeklyData = fake.weeklyData;
+      paymentHistory = fake.paymentHistory || buildPaymentHistoryFromAggregates(fake.weeklyData);
     } else {
       if (SETTINGS.manualMode) {
         employees = normalizeEmployeeMap(SETTINGS.manualMembers);
@@ -932,11 +959,23 @@
         if (!weeklyData[weekKey][senderId]) {
           weeklyData[weekKey][senderId] = { money: 0, items: 0 };
         }
+        if (!paymentHistory[senderId]) {
+          paymentHistory[senderId] = [];
+        }
 
         if (logType === 4800 || logType === 4810) {
           const amount = Number(log?.data?.money ?? log?.data?.amount ?? 0);
           if (Number.isFinite(amount)) {
             weeklyData[weekKey][senderId].money += amount;
+            if (amount > 0) {
+              paymentHistory[senderId].push({
+                timestamp: Number(log.timestamp) * 1000,
+                weekKey,
+                type: 'money',
+                amount,
+                medium: describeLogMedium(log)
+              });
+            }
           }
         } else if (usesItemTracking && logCategory === 85) {
           const targetId = 206; // Xanax
@@ -944,16 +983,35 @@
           const qty = getItemQuantityFromLog(log, targetName, targetId);
           if (qty > 0) {
             weeklyData[weekKey][senderId].items += qty;
+            paymentHistory[senderId].push({
+              timestamp: Number(log.timestamp) * 1000,
+              weekKey,
+              type: 'item',
+              amount: qty,
+              medium: describeLogMedium(log)
+            });
           }
         } else if (usesItemTracking && (logType === 4102 || logType === 4103)) {
           const directId = String(log?.data?.sender || log?.data?.receiver || "");
           if (directId && directId === senderId) {
             const items = Array.isArray(log?.data?.items) ? log.data.items : [];
+            let totalAdded = 0;
             items.forEach(it => {
               if (it && Number(it.id) === 206 && Number.isFinite(Number(it.qty))) {
-                weeklyData[weekKey][senderId].items += Number(it.qty);
+                const qty = Number(it.qty);
+                weeklyData[weekKey][senderId].items += qty;
+                totalAdded += qty;
               }
             });
+            if (totalAdded > 0) {
+              paymentHistory[senderId].push({
+                timestamp: Number(log.timestamp) * 1000,
+                weekKey,
+                type: 'item',
+                amount: totalAdded,
+                medium: describeLogMedium(log)
+              });
+            }
           }
         }
       }
@@ -961,14 +1019,31 @@
 
     lastEmployeesCache = employees;
     lastWeeklyDataCache = weeklyData;
+    Object.keys(employees).forEach(id => {
+      if (!paymentHistory[id]) {
+        paymentHistory[id] = [];
+      }
+    });
+    Object.keys(paymentHistory).forEach(id => {
+      paymentHistory[id].sort((a, b) => {
+        const timeA = Number(a && a.timestamp);
+        const timeB = Number(b && b.timestamp);
+        return timeA - timeB;
+      });
+    });
+    lastPaymentHistoryCache = paymentHistory;
     saveSettings(SETTINGS);
 
     renderOverview(weeklyData, employees);
     if (SETTINGS.enableEmployeeMenu) {
       renderEmployeeMenu(employees);
     }
+    renderPaymentHistory(paymentHistory, employees);
     if (!SETTINGS.enableEmployeeMenu && currentView === "employees") {
       switchView("overview");
+    }
+    if (currentView === "payments") {
+      renderPaymentHistory(paymentHistory, employees);
     }
   }
 
@@ -990,6 +1065,38 @@
     reference.setUTCDate(reference.getUTCDate() + (normalizedOffset * 7));
     const [year, week] = getWeekNumber(reference);
     return { year, week };
+  }
+
+  function formatTimestamp(ms) {
+    const numeric = Number(ms);
+    if (!Number.isFinite(numeric)) {
+      return '';
+    }
+    const date = new Date(numeric);
+    if (Number.isNaN(date.getTime())) {
+      return '';
+    }
+    return date.toLocaleString(undefined, {
+      year: 'numeric',
+      month: 'short',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    });
+  }
+
+  function getDateFromWeekKey(weekKey) {
+    const parsed = parseWeekKey(weekKey);
+    if (!parsed) {
+      return null;
+    }
+    const [year, week] = parsed;
+    const simple = new Date(Date.UTC(year, 0, 4));
+    const dayOfWeek = simple.getUTCDay() || 7;
+    simple.setUTCDate(simple.getUTCDate() - dayOfWeek + 1);
+    simple.setUTCDate(simple.getUTCDate() + (week - 1) * 7);
+    return simple;
   }
 
   function getEmployeeJoinWeek(record) {
@@ -1467,6 +1574,136 @@
     });
   }
 
+  function renderPaymentHistory(paymentHistory, COMPANY_MEMBERS) {
+    if (!paymentsView) {
+      return;
+    }
+
+    const employeeIds = Object.keys(COMPANY_MEMBERS || {});
+    if (employeeIds.length === 0) {
+      paymentsView.innerHTML = '<p style="color:#ccc;">No employees loaded yet. Fetch data to view payment history.</p>';
+      return;
+    }
+
+    const sortedIds = employeeIds.sort((a, b) => {
+      const nameA = getEmployeeName(COMPANY_MEMBERS[a] || {}).toLowerCase();
+      const nameB = getEmployeeName(COMPANY_MEMBERS[b] || {}).toLowerCase();
+      if (nameA === nameB) {
+        return a.localeCompare(b);
+      }
+      return nameA.localeCompare(nameB);
+    });
+
+    let html = '<div style="color:#ccc;font-size:11px;margin-bottom:10px;">Entries use your local timezone. Only payments on or after each employee\'s requirement start are listed.</div>';
+    html += '<div style="display:flex;flex-direction:column;gap:12px;">';
+
+    sortedIds.forEach(id => {
+      const employeeRecord = COMPANY_MEMBERS[id] || {};
+      const employeeName = getEmployeeName(employeeRecord) || 'Unknown';
+      const requirement = getMemberRequirement(id);
+      const requirementStart = requirement ? getRequirementStartWeek(id, requirement) : null;
+      const joinWeekFromDays = getEmployeeJoinWeekFromDays(employeeRecord);
+      const joinWeek = joinWeekFromDays || getEmployeeJoinWeek(employeeRecord);
+      const joinWeekKey = Array.isArray(joinWeek) ? formatWeekKey(joinWeek[0], joinWeek[1]) : null;
+      const startKey = `${SETTINGS.startYear}-W${SETTINGS.startWeek}`;
+
+      const baselineCandidates = [startKey];
+      if (typeof requirementStart === 'string' && parseWeekKey(requirementStart)) {
+        baselineCandidates.push(requirementStart);
+      }
+      if (typeof joinWeekKey === 'string' && parseWeekKey(joinWeekKey)) {
+        baselineCandidates.push(joinWeekKey);
+      }
+
+      let baselineKey = baselineCandidates.filter(Boolean).reduce((latest, candidate) => {
+        if (!latest) {
+          return candidate;
+        }
+        return compareWeekKeys(candidate, latest) > 0 ? candidate : latest;
+      }, null);
+      if (!baselineKey || !parseWeekKey(baselineKey)) {
+        baselineKey = startKey;
+      }
+
+      const entries = (paymentHistory && paymentHistory[id] ? paymentHistory[id] : []).filter(entry => {
+        if (!entry || typeof entry.weekKey !== 'string') {
+          return false;
+        }
+        if (!baselineKey) {
+          return true;
+        }
+        return compareWeekKeys(entry.weekKey, baselineKey) >= 0;
+      });
+
+      let moneyTotal = 0;
+      let itemTotal = 0;
+      entries.forEach(entry => {
+        if (!entry) {
+          return;
+        }
+        if (entry.type === 'money' && Number.isFinite(entry.amount)) {
+          moneyTotal += entry.amount;
+        } else if (entry.type === 'item' && Number.isFinite(entry.amount)) {
+          itemTotal += entry.amount;
+        }
+      });
+
+      html += '<div style="padding:12px;border:1px solid #333;border-radius:6px;background:#1f1f1f;">';
+      html += `<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;">`;
+      html += `<strong style="color:#fff;font-size:13px;">${escapeHtml(employeeName)} [${escapeHtml(id)}]</strong>`;
+      html += `<span style="color:#888;font-size:11px;">Showing payments since ${escapeHtml(baselineKey)}</span>`;
+      html += '</div>';
+
+      if (entries.length === 0) {
+        html += '<div style="color:#888;margin-top:8px;">No payments recorded during this period.</div>';
+      } else {
+        html += '<table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:12px;">';
+        html += '<thead><tr style="background:#2a2a2a;color:#fff;font-weight:bold;">';
+        html += '<th style="padding:6px;border:1px solid #333;text-align:left;">Date</th>';
+        html += '<th style="padding:6px;border:1px solid #333;text-align:left;">Week</th>';
+        html += '<th style="padding:6px;border:1px solid #333;text-align:left;">Type</th>';
+        html += '<th style="padding:6px;border:1px solid #333;text-align:left;">Amount</th>';
+        html += '<th style="padding:6px;border:1px solid #333;text-align:left;">Details</th>';
+        html += '</tr></thead><tbody>';
+
+        entries.forEach((entry, index) => {
+          const rowBg = index % 2 === 0 ? '#1b1b1b' : '#242424';
+          const dateLabel = formatTimestamp(entry.timestamp) || 'Unknown';
+          const weekLabel = entry.weekKey || '—';
+          const typeLabel = entry.type === 'item' ? `${SETTINGS.taxItemName}` : 'Money';
+          const amountLabel = entry.type === 'item'
+            ? `${(Number.isFinite(entry.amount) ? entry.amount : 0).toLocaleString()} ${SETTINGS.taxItemName}`
+            : `$${Number.isFinite(entry.amount) ? entry.amount.toLocaleString() : '0'}`;
+          const detailsLabel = entry.medium ? escapeHtml(entry.medium) : '';
+          html += `<tr style="background:${rowBg};color:#ccc;">`;
+          html += `<td style="padding:6px;border:1px solid #333;">${escapeHtml(dateLabel)}</td>`;
+          html += `<td style="padding:6px;border:1px solid #333;">${escapeHtml(weekLabel)}</td>`;
+          html += `<td style="padding:6px;border:1px solid #333;">${escapeHtml(typeLabel)}</td>`;
+          html += `<td style="padding:6px;border:1px solid #333;">${escapeHtml(amountLabel)}</td>`;
+          html += `<td style="padding:6px;border:1px solid #333;">${detailsLabel || '<span style="color:#666;">&mdash;</span>'}</td>`;
+          html += '</tr>';
+        });
+
+        html += '</tbody></table>';
+        if (moneyTotal > 0 || itemTotal > 0) {
+          const totals = [];
+          if (moneyTotal > 0) {
+            totals.push(`Money: $${moneyTotal.toLocaleString()}`);
+          }
+          if (itemTotal > 0) {
+            totals.push(`${SETTINGS.taxItemName}: ${itemTotal.toLocaleString()}`);
+          }
+          html += `<div style="margin-top:8px;color:#ccc;font-size:12px;">Totals since ${escapeHtml(baselineKey)} — ${escapeHtml(totals.join('; '))}</div>`;
+        }
+      }
+
+      html += '</div>';
+    });
+
+    html += '</div>';
+    paymentsView.innerHTML = html;
+  }
+
   function renderEmployeeMenu(employees) {
     if (!employeeView) return;
     if (!SETTINGS.enableEmployeeMenu) {
@@ -1608,6 +1845,7 @@
         saveSettings(SETTINGS);
         renderOverview(lastWeeklyDataCache, lastEmployeesCache);
         renderEmployeeMenu(employees);
+        renderPaymentHistory(lastPaymentHistoryCache, lastEmployeesCache);
         alert('Employee requirements saved.');
       });
     }
@@ -1615,6 +1853,53 @@
 
   function safe(obj, path) {
     return path.split('.').reduce((acc, key) => (acc && acc[key] !== undefined ? acc[key] : undefined), obj);
+  }
+
+  function describeLogMedium(log) {
+    if (!log || typeof log !== 'object') {
+      return 'Log Entry';
+    }
+    const type = Number(log.log);
+    const category = Number(log.category);
+    if (type === 4800) {
+      return 'Money transfer to company';
+    }
+    if (type === 4810) {
+      return 'Company trade payment';
+    }
+    if (type === 4102) {
+      return 'Trade sent items';
+    }
+    if (type === 4103) {
+      return 'Trade received items';
+    }
+    if (category === 85) {
+      return 'Item delivery to company';
+    }
+    const details = [];
+    const title = typeof log.title === 'string' ? log.title.trim() : '';
+    if (title) {
+      details.push(title);
+    }
+    const description = typeof log.description === 'string' ? log.description.trim() : '';
+    if (description) {
+      details.push(description);
+    }
+    const dataFields = ['note', 'message', 'reason', 'description', 'summary', 'detail'];
+    dataFields.forEach(field => {
+      const value = log?.data ? log.data[field] : undefined;
+      if (typeof value === 'string') {
+        const trimmed = value.trim();
+        if (trimmed) {
+          details.push(trimmed);
+        }
+      }
+    });
+    if (details.length === 0 && Number.isFinite(type)) {
+      details.push(`Log ${type}`);
+    }
+    const unique = Array.from(new Set(details.filter(Boolean)));
+    return unique.length > 0 ? unique.join(' — ') : 'Log Entry';
   }
 
   function normalizeIdCandidate(candidate) {
@@ -2060,6 +2345,49 @@
     return additional > 0 ? additional : 0;
   }
 
+  function buildPaymentHistoryFromAggregates(weeklyData) {
+    const history = {};
+    if (!weeklyData || typeof weeklyData !== 'object') {
+      return history;
+    }
+    Object.keys(weeklyData).forEach(weekKey => {
+      const perEmployee = weeklyData[weekKey];
+      if (!perEmployee || typeof perEmployee !== 'object') {
+        return;
+      }
+      const baseDate = getDateFromWeekKey(weekKey);
+      const baseTime = baseDate ? baseDate.getTime() : Date.now();
+      Object.keys(perEmployee).forEach(employeeId => {
+        const totals = perEmployee[employeeId] || {};
+        if (!history[employeeId]) {
+          history[employeeId] = [];
+        }
+        if (Number.isFinite(totals.money) && totals.money > 0) {
+          history[employeeId].push({
+            timestamp: baseTime,
+            weekKey,
+            type: 'money',
+            amount: totals.money,
+            medium: 'Simulated payment (Test Mode)'
+          });
+        }
+        if (Number.isFinite(totals.items) && totals.items > 0) {
+          history[employeeId].push({
+            timestamp: baseTime + 60000,
+            weekKey,
+            type: 'item',
+            amount: totals.items,
+            medium: 'Simulated item delivery (Test Mode)'
+          });
+        }
+      });
+    });
+    Object.keys(history).forEach(id => {
+      history[id].sort((a, b) => Number(a.timestamp || 0) - Number(b.timestamp || 0));
+    });
+    return history;
+  }
+
   function generateWeekMapFrom(startYear, startWeek) {
     const map = {};
     const now = new Date();
@@ -2076,6 +2404,28 @@
 
   function generateWeekKeys(startYear, startWeek) {
     return Object.keys(generateWeekMapFrom(startYear, startWeek));
+  }
+
+  function escapeHtml(value) {
+    if (value === null || value === undefined) {
+      return '';
+    }
+    return String(value).replace(/[&<>'"]/g, ch => {
+      switch (ch) {
+        case '&':
+          return '&amp;';
+        case '<':
+          return '&lt;';
+        case '>':
+          return '&gt;';
+        case '"':
+          return '&quot;';
+        case "'":
+          return '&#39;';
+        default:
+          return ch;
+      }
+    });
   }
 
 })();
