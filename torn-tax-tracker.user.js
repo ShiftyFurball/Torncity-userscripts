@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      7.19
+// @version      7.20
 // @description  Track weekly company tax from employees in Torn with Torn-styled table, draggable/resizable panel, company profiles, reminders, overpayment tracking, totals row, and Test Mode.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -710,6 +710,8 @@
     padding: "6px 10px", borderRadius: "6px 0 0 6px", cursor: "pointer"
   });
   button.textContent = "Tax";
+  button.title = "Open tax tracker (Alt+T)";
+  button.setAttribute("aria-label", "Open tax tracker");
   document.body.appendChild(button);
 
   // Panel shell
@@ -817,6 +819,30 @@
   makeResizable(panel);
 
   button.addEventListener("click", () => {
+    if (!SETTINGS.apiKey && !SETTINGS.testMode) {
+      showApiPrompt();
+      return;
+    }
+    bringToFront(panel);
+    panel.style.display = "flex";
+    fetchData();
+  });
+  document.addEventListener("keydown", event => {
+    if (!event.altKey || event.repeat) {
+      return;
+    }
+    if ((event.key || "").toLowerCase() !== "t") {
+      return;
+    }
+    const targetTag = (event.target && event.target.tagName ? event.target.tagName : "").toLowerCase();
+    if (targetTag === "input" || targetTag === "textarea" || targetTag === "select") {
+      return;
+    }
+    event.preventDefault();
+    if (panel.style.display === "flex") {
+      panel.style.display = "none";
+      return;
+    }
     if (!SETTINGS.apiKey && !SETTINGS.testMode) {
       showApiPrompt();
       return;
@@ -1642,7 +1668,14 @@
       return;
     }
 
-    const employeeIds = Object.keys(COMPANY_MEMBERS);
+    const employeeIds = Object.keys(COMPANY_MEMBERS).sort((a, b) => {
+      const nameA = getEmployeeName(COMPANY_MEMBERS[a] || {}).toLowerCase();
+      const nameB = getEmployeeName(COMPANY_MEMBERS[b] || {}).toLowerCase();
+      if (nameA === nameB) {
+        return a.localeCompare(b);
+      }
+      return nameA.localeCompare(nameB);
+    });
     if (employeeIds.length === 0) {
       overviewView.innerHTML = '<p style="color:#ccc;">No employees loaded yet. Fetch data to view tax progress.</p>';
       return;
@@ -1664,6 +1697,12 @@
     periodHtml += `<span><strong>Showing:</strong> ${displayWeeks.length} week${displayWeeks.length === 1 ? '' : 's'}</span>`;
     periodHtml += `<span><strong>Range:</strong> ${firstVisibleWeekInfo.fullLabel} (${firstVisibleWeekInfo.startLabel}) → ${lastVisibleWeekInfo.fullLabel} (${lastVisibleWeekInfo.startLabel})</span>`;
     periodHtml += '</div>';
+
+    let controlsHtml = '<div style="margin:10px 0;padding:8px 10px;background:#222;border:1px solid #3a3a3a;border-radius:6px;color:#ddd;font-size:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">';
+    controlsHtml += '<label style="display:flex;align-items:center;gap:6px;"><span>Filter:</span><input id="overviewEmployeeFilter" type="text" placeholder="Name or ID" style="background:#111;color:#0f0;border:1px solid #555;padding:4px 6px;border-radius:4px;min-width:180px;"></label>';
+    controlsHtml += '<label style="display:flex;align-items:center;gap:6px;"><input id="overviewOwingOnly" type="checkbox">Owing only</label>';
+    controlsHtml += '<span id="overviewVisibleCount" style="color:#9fd3ff;margin-left:auto;"></span>';
+    controlsHtml += '</div>';
 
     let html = '<div style="overflow:auto;"><table style="width:100%; border-collapse: collapse; text-align:center; font-size:12px; background:#1b1b1b; color:#ccc;">';
     html += '<thead><tr style="background:#2a2a2a; color:#fff; font-weight:bold;">';
@@ -1802,7 +1841,7 @@
         }
       }
 
-      html += `<tr style="background:${rowBg};">`;
+      html += `<tr class="tax-overview-row" data-employee-id="${escapeHtml(String(id))}" data-employee-name="${escapeHtml(employeeName.toLowerCase())}" style="background:${rowBg};">`;
       html += `<td style="padding:6px;border:1px solid #444;text-align:left;color:#fff;position:sticky;left:0;background:${rowBg};">${employeeName} [${id}]</td>`;
 
       displayWeeks.forEach(week => {
@@ -1950,13 +1989,13 @@
 
       if (balance < 0) {
         const owe = type === 'money' ? `$${Math.abs(balance).toLocaleString()}` : `${Math.abs(balance)} ${SETTINGS.taxItemName}`;
-        html += `<td style="color:#ff6666;padding:6px;border:1px solid #444;position:sticky;right:0;background:${rowBg};">Owes ${owe}</td>`;
+        html += `<td data-balance-state="owing" style="color:#ff6666;padding:6px;border:1px solid #444;position:sticky;right:0;background:${rowBg};">Owes ${owe}</td>`;
         owingList.push({ id, name: employeeName, amount: owe });
       } else if (balance > 0) {
         const over = type === 'money' ? `$${balance.toLocaleString()}` : `${balance} ${SETTINGS.taxItemName}`;
-        html += `<td style="color:#66ccff;padding:6px;border:1px solid #444;position:sticky;right:0;background:${rowBg};">Overpaid ${over}</td>`;
+        html += `<td data-balance-state="overpaid" style="color:#66ccff;padding:6px;border:1px solid #444;position:sticky;right:0;background:${rowBg};">Overpaid ${over}</td>`;
       } else {
-        html += `<td style="color:#66ff66;padding:6px;border:1px solid #444;position:sticky;right:0;background:${rowBg};">On Track</td>`;
+        html += `<td data-balance-state="on-track" style="color:#66ff66;padding:6px;border:1px solid #444;position:sticky;right:0;background:${rowBg};">On Track</td>`;
       }
 
       html += '</tr>';
@@ -1998,7 +2037,40 @@
     }
     reminderHtml += '</div>';
 
-    overviewView.innerHTML = periodHtml + tipHtml + html + summaryHtml + reminderHtml;
+    overviewView.innerHTML = periodHtml + controlsHtml + tipHtml + html + summaryHtml + reminderHtml;
+
+    const filterInput = overviewView.querySelector("#overviewEmployeeFilter");
+    const owingOnlyCheckbox = overviewView.querySelector("#overviewOwingOnly");
+    const visibleCountLabel = overviewView.querySelector("#overviewVisibleCount");
+    const applyOverviewFilter = () => {
+      const rows = Array.from(overviewView.querySelectorAll(".tax-overview-row"));
+      const term = (filterInput && filterInput.value ? filterInput.value : "").trim().toLowerCase();
+      const showOwingOnly = !!(owingOnlyCheckbox && owingOnlyCheckbox.checked);
+      let visibleCount = 0;
+      rows.forEach(row => {
+        const employeeName = row.getAttribute("data-employee-name") || "";
+        const employeeId = row.getAttribute("data-employee-id") || "";
+        const balanceCell = row.querySelector("td[data-balance-state]");
+        const isOwing = balanceCell && balanceCell.getAttribute("data-balance-state") === "owing";
+        const matchesTerm = !term || employeeName.includes(term) || employeeId.includes(term);
+        const matchesState = !showOwingOnly || isOwing;
+        const visible = matchesTerm && matchesState;
+        row.style.display = visible ? "" : "none";
+        if (visible) {
+          visibleCount += 1;
+        }
+      });
+      if (visibleCountLabel) {
+        visibleCountLabel.textContent = `Showing ${visibleCount} of ${rows.length}`;
+      }
+    };
+    if (filterInput) {
+      filterInput.addEventListener("input", applyOverviewFilter);
+    }
+    if (owingOnlyCheckbox) {
+      owingOnlyCheckbox.addEventListener("change", applyOverviewFilter);
+    }
+    applyOverviewFilter();
 
     overviewView.querySelectorAll('.tax-week-cell').forEach(cell => {
       cell.addEventListener('click', event => {
