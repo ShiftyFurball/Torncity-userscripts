@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      7.14
+// @version      7.15
 // @description  Track weekly company tax from employees in Torn with Torn-styled table, draggable/resizable panel, reminders, overpayment tracking, totals row, and Test Mode.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -46,7 +46,16 @@
 
   function loadSettings() {
     const saved = localStorage.getItem(STORAGE_KEY_SETTINGS);
-    return saved ? Object.assign({}, DEFAULT_SETTINGS, JSON.parse(saved)) : DEFAULT_SETTINGS;
+    if (!saved) {
+      return Object.assign({}, DEFAULT_SETTINGS);
+    }
+    try {
+      const parsed = JSON.parse(saved);
+      return Object.assign({}, DEFAULT_SETTINGS, parsed);
+    } catch (err) {
+      console.warn("Failed to parse saved settings, resetting to defaults.", err);
+      return Object.assign({}, DEFAULT_SETTINGS);
+    }
   }
   function saveSettings(s) {
     localStorage.setItem(STORAGE_KEY_SETTINGS, JSON.stringify(s));
@@ -329,6 +338,17 @@
     SETTINGS.defaultRequirementReset = `${SETTINGS.startYear}-W${SETTINGS.startWeek}`;
   }
 
+  function sanitizeSettingsInPlace() {
+    const parsedYear = parseInt(SETTINGS.startYear, 10);
+    const parsedWeek = parseInt(SETTINGS.startWeek, 10);
+    const parsedMaxWeeks = parseInt(SETTINGS.maxWeeks, 10);
+    SETTINGS.startYear = Number.isFinite(parsedYear) && parsedYear >= 2000 ? parsedYear : DEFAULT_SETTINGS.startYear;
+    SETTINGS.startWeek = Number.isFinite(parsedWeek) ? Math.min(53, Math.max(1, parsedWeek)) : DEFAULT_SETTINGS.startWeek;
+    SETTINGS.maxWeeks = Number.isFinite(parsedMaxWeeks) ? Math.min(52, Math.max(1, parsedMaxWeeks)) : DEFAULT_SETTINGS.maxWeeks;
+  }
+
+  sanitizeSettingsInPlace();
+
   let lastEmployeesCache = {};
   let lastWeeklyDataCache = {};
   let lastPaymentHistoryCache = {};
@@ -605,7 +625,7 @@
   Object.assign(panel.style, {
     display: "none", position: "fixed", top: "10%", left: "10%",
     width: "80%", height: "75%", background: "#1b1b1b", color: "#ccc",
-    padding: "0", zIndex: "10000", borderRadius: "6px", overflow: "hidden",
+    padding: "0", zIndex: "10000", borderRadius: "6px", overflow: "hidden", flexDirection: "column",
     boxShadow: "0px 0px 15px rgba(0,0,0,0.7)", border: "1px solid #333",
     fontFamily: "'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', 'Apple Color Emoji', Verdana, sans-serif"
   });
@@ -617,12 +637,14 @@
         <button id="openOverview" style="background:#2e8b57;color:white;border:none;padding:4px 8px;cursor:pointer;border-radius:4px;">Overview</button>
         <button id="openPayments" style="background:#444;color:white;border:none;padding:4px 8px;cursor:pointer;border-radius:4px;">Payments</button>
         <button id="openEmployeeMenu" style="display:${SETTINGS.enableEmployeeMenu ? "inline-block" : "none"};background:#444;color:white;border:none;padding:4px 8px;cursor:pointer;border-radius:4px;">Employees</button>
+        <button id="refreshTaxData" style="background:#1e4f75;color:white;border:none;padding:4px 8px;cursor:pointer;border-radius:4px;">Refresh</button>
         <button id="editSettings" style="background:#444;color:white;border:none;padding:4px 8px;cursor:pointer;border-radius:4px;">Settings</button>
         <button id="editEmployees" style="display:${SETTINGS.manualMode ? "inline-block" : "none"};background:#555;color:white;border:none;padding:4px 8px;cursor:pointer;border-radius:4px;">Edit Employees</button>
         <button id="close-tax" style="background:#b30000;color:white;border:none;padding:4px 8px;cursor:pointer;border-radius:4px;">X</button>
       </div>
     </div>
-    <div id="viewContainer" style="height:calc(100% - 44px);">
+    <div id="tax-status" style="display:none;padding:6px 10px;border-bottom:1px solid #2d2d2d;font-size:12px;color:#e0e0e0;background:#191919;"></div>
+    <div id="viewContainer" style="flex:1;min-height:0;">
       <div id="overviewView" style="height:100%;overflow:auto;padding:10px;"></div>
       <div id="paymentsView" style="display:none;height:100%;overflow:auto;padding:10px;"></div>
       <div id="employeeView" style="display:none;height:100%;overflow:auto;padding:10px;"></div>
@@ -636,7 +658,31 @@
   const overviewButton = panel.querySelector("#openOverview");
   const paymentsButton = panel.querySelector("#openPayments");
   const employeeButton = panel.querySelector("#openEmployeeMenu");
+  const refreshButton = panel.querySelector("#refreshTaxData");
+  const statusBanner = panel.querySelector("#tax-status");
   let currentView = "overview";
+
+  function setStatus(message, kind = "info") {
+    if (!statusBanner) {
+      return;
+    }
+    if (!message) {
+      statusBanner.style.display = "none";
+      statusBanner.textContent = "";
+      return;
+    }
+    const palette = {
+      info: { bg: "#191919", color: "#e0e0e0", border: "#2d2d2d" },
+      success: { bg: "#17341f", color: "#98f0b5", border: "#1f5a32" },
+      error: { bg: "#3c1a1a", color: "#ffb6b6", border: "#6a2626" }
+    };
+    const selected = palette[kind] || palette.info;
+    statusBanner.style.display = "block";
+    statusBanner.style.background = selected.bg;
+    statusBanner.style.color = selected.color;
+    statusBanner.style.borderBottomColor = selected.border;
+    statusBanner.textContent = message;
+  }
 
   function switchView(view) {
     if (view === "employees" && !SETTINGS.enableEmployeeMenu) {
@@ -682,7 +728,7 @@
       showApiPrompt();
       return;
     }
-    panel.style.display = "block";
+    panel.style.display = "flex";
     fetchData();
   });
   panel.querySelector("#close-tax").addEventListener("click", () => panel.style.display = "none");
@@ -715,6 +761,9 @@
       }
     });
   }
+  if (refreshButton) {
+    refreshButton.addEventListener("click", () => fetchData(true));
+  }
 
   switchView("overview");
 
@@ -737,7 +786,7 @@
       SETTINGS.apiKey = editor.querySelector("#apiInput").value.trim();
       saveSettings(SETTINGS);
       editor.remove();
-      panel.style.display = "block";
+      panel.style.display = "flex";
       fetchData();
     });
   }
@@ -867,6 +916,7 @@
       SETTINGS.defaultItemTax = parseInt(editor.querySelector("#setDefaultItem").value, 10) || DEFAULT_SETTINGS.defaultItemTax;
       SETTINGS.reminderMessage = editor.querySelector("#setReminder").value.trim() || DEFAULT_SETTINGS.reminderMessage;
       SETTINGS.requiredTax = SETTINGS.defaultMoneyTax;
+      sanitizeSettingsInPlace();
       const defaults = getDefaultRequirement();
       if (previousDefaults.type !== defaults.type || previousDefaults.amount !== defaults.amount) {
         SETTINGS.defaultRequirementReset = getCurrentWeekKey();
@@ -984,231 +1034,252 @@
     });
   }
 
-  async function fetchData() {
+  async function fetchData(forceRefresh = false) {
+    setStatus("Fetching latest tax data...", "info");
     let employees = {};
     let weeklyData = {};
     let paymentHistory = {};
-
-    if (SETTINGS.testMode) {
-      const fake = makeFakeData();
-      employees = fake.employees;
-      weeklyData = fake.weeklyData;
-      paymentHistory = fake.paymentHistory || buildPaymentHistoryFromAggregates(fake.weeklyData);
-    } else {
-      if (SETTINGS.manualMode) {
-        employees = normalizeEmployeeMap(SETTINGS.manualMembers);
-        SETTINGS.manualMembers = employees;
+    try {
+      if (SETTINGS.testMode) {
+        const fake = makeFakeData();
+        employees = fake.employees;
+        weeklyData = fake.weeklyData;
+        paymentHistory = fake.paymentHistory || buildPaymentHistoryFromAggregates(fake.weeklyData);
       } else {
-        const res = await fetch(`https://api.torn.com/company/?selections=employees&key=${encodeURIComponent(SETTINGS.apiKey)}`);
-        const data = await res.json();
-        employees = {};
-        Object.keys(data.company_employees || {}).forEach(id => {
-          const info = data.company_employees[id];
-          if (!info) {
+        if (SETTINGS.manualMode) {
+          employees = normalizeEmployeeMap(SETTINGS.manualMembers);
+          SETTINGS.manualMembers = employees;
+        } else {
+          const res = await fetch(`https://api.torn.com/company/?selections=employees&key=${encodeURIComponent(SETTINGS.apiKey)}`);
+          const data = await res.json();
+          if (data && data.error) {
+            throw new Error(`Torn API error (${data.error.code}): ${data.error.error}`);
+          }
+          employees = {};
+          Object.keys(data.company_employees || {}).forEach(id => {
+            const info = data.company_employees[id];
+            if (!info) {
+              return;
+            }
+            const joinDaysValue = Number(info.days_in_company);
+            const joinDateValue = Number(info.join_date);
+            employees[id] = {
+              name: typeof info.name === "string" ? info.name : "",
+              joinDays: Number.isFinite(joinDaysValue) ? joinDaysValue : null,
+              joinDate: Number.isFinite(joinDateValue) && joinDateValue > 0 ? joinDateValue : null
+            };
+          });
+        }
+
+        Object.keys(SETTINGS.memberRequirements).forEach(id => {
+          if (!employees[id]) {
+            delete SETTINGS.memberRequirements[id];
+          }
+        });
+        if (SETTINGS.memberRequirementResets) {
+          Object.keys(SETTINGS.memberRequirementResets).forEach(id => {
+            if (!employees[id]) {
+              delete SETTINGS.memberRequirementResets[id];
+            }
+          });
+        }
+        if (SETTINGS.memberWeekExclusions) {
+          Object.keys(SETTINGS.memberWeekExclusions).forEach(id => {
+            if (!employees[id]) {
+              delete SETTINGS.memberWeekExclusions[id];
+            }
+          });
+        }
+        if (SETTINGS.memberWeekCarrybacks) {
+          Object.keys(SETTINGS.memberWeekCarrybacks).forEach(id => {
+            if (!employees[id]) {
+              delete SETTINGS.memberWeekCarrybacks[id];
+            }
+          });
+        }
+        if (SETTINGS.excludedPayments) {
+          Object.keys(SETTINGS.excludedPayments).forEach(id => {
+            if (!employees[id]) {
+              delete SETTINGS.excludedPayments[id];
+            }
+          });
+        }
+
+        const defaults = getDefaultRequirement();
+        Object.keys(employees).forEach(id => {
+          if (!SETTINGS.memberRequirements[id]) {
+            SETTINGS.memberRequirements[id] = { type: defaults.type, amount: defaults.amount, useDefault: true };
             return;
           }
-          const joinDaysValue = Number(info.days_in_company);
-          const joinDateValue = Number(info.join_date);
-          employees[id] = {
-            name: typeof info.name === "string" ? info.name : "",
-            joinDays: Number.isFinite(joinDaysValue) ? joinDaysValue : null,
-            joinDate: Number.isFinite(joinDateValue) && joinDateValue > 0 ? joinDateValue : null
-          };
-        });
-      }
-
-      Object.keys(SETTINGS.memberRequirements).forEach(id => {
-        if (!employees[id]) {
-          delete SETTINGS.memberRequirements[id];
-        }
-      });
-      if (SETTINGS.memberRequirementResets) {
-        Object.keys(SETTINGS.memberRequirementResets).forEach(id => {
-          if (!employees[id]) {
-            delete SETTINGS.memberRequirementResets[id];
+          if (SETTINGS.memberRequirements[id].useDefault) {
+            SETTINGS.memberRequirements[id].type = defaults.type;
+            SETTINGS.memberRequirements[id].amount = defaults.amount;
           }
         });
-      }
-      if (SETTINGS.memberWeekExclusions) {
-        Object.keys(SETTINGS.memberWeekExclusions).forEach(id => {
-          if (!employees[id]) {
-            delete SETTINGS.memberWeekExclusions[id];
-          }
+
+        const usesItemTracking = SETTINGS.defaultRequirementType === 'item' || Object.values(SETTINGS.memberRequirements).some(req => req && req.type === 'item');
+        const itemCatalog = await ensureItemCatalog();
+        const configuredItemName = (SETTINGS.taxItemName || DEFAULT_SETTINGS.taxItemName).trim();
+        const configuredItemId = getItemIdForName(configuredItemName) || 206;
+        const configuredItemDisplayName = configuredItemId === 206
+          ? configuredItemName
+          : ((itemCatalog.byId && itemCatalog.byId[configuredItemId] && itemCatalog.byId[configuredItemId].name) || configuredItemName);
+
+        const moneyRes = await fetch(`https://api.torn.com/user/?selections=log&log=4800,4810&key=${encodeURIComponent(SETTINGS.apiKey)}`);
+        const moneyData = await moneyRes.json();
+        if (moneyData && moneyData.error) {
+          throw new Error(`Torn API error (${moneyData.error.code}): ${moneyData.error.error}`);
+        }
+
+        const itemRes = await fetch(`https://api.torn.com/user/?selections=log&log=85,4102,4103&key=${encodeURIComponent(SETTINGS.apiKey)}`);
+        const itemData = await itemRes.json();
+        if (itemData && itemData.error) {
+          throw new Error(`Torn API error (${itemData.error.code}): ${itemData.error.error}`);
+        }
+
+        const logs = { ...(moneyData && moneyData.log ? moneyData.log : {}), ...(itemData && itemData.log ? itemData.log : {}) };
+        const employeeNameIndex = buildEmployeeNameIndex(employees);
+
+        const weekMap = generateWeekMapFrom(SETTINGS.startYear, SETTINGS.startWeek);
+        Object.keys(weekMap).forEach(key => {
+          weeklyData[key] = {};
         });
-      }
-      if (SETTINGS.memberWeekCarrybacks) {
-        Object.keys(SETTINGS.memberWeekCarrybacks).forEach(id => {
-          if (!employees[id]) {
-            delete SETTINGS.memberWeekCarrybacks[id];
-          }
-        });
-      }
-      if (SETTINGS.excludedPayments) {
-        Object.keys(SETTINGS.excludedPayments).forEach(id => {
-          if (!employees[id]) {
-            delete SETTINGS.excludedPayments[id];
-          }
-        });
-      }
 
-      const defaults = getDefaultRequirement();
-      Object.keys(employees).forEach(id => {
-        if (!SETTINGS.memberRequirements[id]) {
-          SETTINGS.memberRequirements[id] = { type: defaults.type, amount: defaults.amount, useDefault: true };
-          return;
-        }
-        if (SETTINGS.memberRequirements[id].useDefault) {
-          SETTINGS.memberRequirements[id].type = defaults.type;
-          SETTINGS.memberRequirements[id].amount = defaults.amount;
-        }
-      });
+        for (const id in logs) {
+          const log = logs[id];
+          const ts = new Date(log.timestamp * 1000);
+          const [year, week] = getWeekNumber(ts);
+          if (year < SETTINGS.startYear || (year === SETTINGS.startYear && week < SETTINGS.startWeek)) continue;
+          const weekKey = `${year}-W${week}`;
 
-      const usesItemTracking = SETTINGS.defaultRequirementType === 'item' || Object.values(SETTINGS.memberRequirements).some(req => req && req.type === 'item');
+          const logType = Number(log.log);
+          const logCategory = Number(log.category);
 
-      const moneyRes = await fetch(`https://api.torn.com/user/?selections=log&log=4800,4810&key=${encodeURIComponent(SETTINGS.apiKey)}`);
-      const moneyData = await moneyRes.json();
+          const logId = String(id);
 
-      const itemRes = await fetch(`https://api.torn.com/user/?selections=log&log=85,4102,4103&key=${encodeURIComponent(SETTINGS.apiKey)}`);
-      const itemData = await itemRes.json();
-
-      const logs = { ...(moneyData && moneyData.log ? moneyData.log : {}), ...(itemData && itemData.log ? itemData.log : {}) };
-      const employeeNameIndex = buildEmployeeNameIndex(employees);
-
-      const weekMap = generateWeekMapFrom(SETTINGS.startYear, SETTINGS.startWeek);
-      Object.keys(weekMap).forEach(key => {
-        weeklyData[key] = {};
-      });
-
-      for (const id in logs) {
-        const log = logs[id];
-        const ts = new Date(log.timestamp * 1000);
-        const [year, week] = getWeekNumber(ts);
-        if (year < SETTINGS.startYear || (year === SETTINGS.startYear && week < SETTINGS.startWeek)) continue;
-        const weekKey = `${year}-W${week}`;
-
-        const logType = Number(log.log);
-        const logCategory = Number(log.category);
-
-        const logId = String(id);
-
-        let senderId = findEmployeeIdFromLog(log, employees, employeeNameIndex);
-        if (!senderId && usesItemTracking && (logType === 4102 || logType === 4103)) {
-          const directId = String(log?.data?.sender || log?.data?.receiver || "");
-          if (directId && employees[directId]) {
-            senderId = directId;
-          }
-        }
-        if (!senderId) continue;
-
-        if (!weeklyData[weekKey]) {
-          weeklyData[weekKey] = {};
-        }
-        if (!weeklyData[weekKey][senderId]) {
-          weeklyData[weekKey][senderId] = { money: 0, items: 0 };
-        }
-        if (!paymentHistory[senderId]) {
-          paymentHistory[senderId] = [];
-        }
-
-        if (logType === 4800 || logType === 4810) {
-          const amount = Number(log?.data?.money ?? log?.data?.amount ?? 0);
-          if (Number.isFinite(amount)) {
-            const excluded = isPaymentExcluded(senderId, logId);
-            if (!excluded && amount > 0) {
-              weeklyData[weekKey][senderId].money += amount;
-            }
-            if (amount > 0) {
-              paymentHistory[senderId].push({
-                id: logId,
-                timestamp: Number(log.timestamp) * 1000,
-                weekKey,
-                type: 'money',
-                amount,
-                medium: describeLogMedium(log),
-                excluded
-              });
+          let senderId = findEmployeeIdFromLog(log, employees, employeeNameIndex);
+          if (!senderId && usesItemTracking && (logType === 4102 || logType === 4103)) {
+            const directId = String(log?.data?.sender || log?.data?.receiver || "");
+            if (directId && employees[directId]) {
+              senderId = directId;
             }
           }
-        } else if (usesItemTracking && logCategory === 85) {
-          const targetId = 206; // Xanax
-          const targetName = SETTINGS.taxItemName || "Xanax";
-          const qty = getItemQuantityFromLog(log, targetName, targetId);
-          if (qty > 0) {
-            const excluded = isPaymentExcluded(senderId, logId);
-            if (!excluded) {
-              weeklyData[weekKey][senderId].items += qty;
-            }
-            paymentHistory[senderId].push({
-              id: logId,
-              timestamp: Number(log.timestamp) * 1000,
-              weekKey,
-              type: 'item',
-              amount: qty,
-              medium: describeLogMedium(log),
-              excluded
-            });
+          if (!senderId) continue;
+
+          if (!weeklyData[weekKey]) {
+            weeklyData[weekKey] = {};
           }
-        } else if (usesItemTracking && (logType === 4102 || logType === 4103)) {
-          const directId = String(log?.data?.sender || log?.data?.receiver || "");
-          if (directId && directId === senderId) {
-            const items = Array.isArray(log?.data?.items) ? log.data.items : [];
-            let totalAdded = 0;
-            items.forEach(it => {
-              if (it && Number(it.id) === 206 && Number.isFinite(Number(it.qty))) {
-                const qty = Number(it.qty);
-                const excluded = isPaymentExcluded(senderId, logId);
-                if (!excluded) {
-                  weeklyData[weekKey][senderId].items += qty;
-                }
-                totalAdded += qty;
-              }
-            });
-            if (totalAdded > 0) {
+          if (!weeklyData[weekKey][senderId]) {
+            weeklyData[weekKey][senderId] = { money: 0, items: 0 };
+          }
+          if (!paymentHistory[senderId]) {
+            paymentHistory[senderId] = [];
+          }
+
+          if (logType === 4800 || logType === 4810) {
+            const amount = Number(log?.data?.money ?? log?.data?.amount ?? 0);
+            if (Number.isFinite(amount)) {
               const excluded = isPaymentExcluded(senderId, logId);
+              if (!excluded && amount > 0) {
+                weeklyData[weekKey][senderId].money += amount;
+              }
+              if (amount > 0) {
+                paymentHistory[senderId].push({
+                  id: logId,
+                  timestamp: Number(log.timestamp) * 1000,
+                  weekKey,
+                  type: 'money',
+                  amount,
+                  medium: describeLogMedium(log),
+                  excluded
+                });
+              }
+            }
+          } else if (usesItemTracking && logCategory === 85) {
+            const qty = getItemQuantityFromLog(log, configuredItemDisplayName, configuredItemId);
+            if (qty > 0) {
+              const excluded = isPaymentExcluded(senderId, logId);
+              if (!excluded) {
+                weeklyData[weekKey][senderId].items += qty;
+              }
               paymentHistory[senderId].push({
                 id: logId,
                 timestamp: Number(log.timestamp) * 1000,
                 weekKey,
                 type: 'item',
-                amount: totalAdded,
+                amount: qty,
                 medium: describeLogMedium(log),
                 excluded
               });
             }
+          } else if (usesItemTracking && (logType === 4102 || logType === 4103)) {
+            const directId = String(log?.data?.sender || log?.data?.receiver || "");
+            if (directId && directId === senderId) {
+              const items = Array.isArray(log?.data?.items) ? log.data.items : [];
+              let totalAdded = 0;
+              items.forEach(it => {
+                if (it && Number(it.id) === configuredItemId && Number.isFinite(Number(it.qty))) {
+                  const qty = Number(it.qty);
+                  const excluded = isPaymentExcluded(senderId, logId);
+                  if (!excluded) {
+                    weeklyData[weekKey][senderId].items += qty;
+                  }
+                  totalAdded += qty;
+                }
+              });
+              if (totalAdded > 0) {
+                const excluded = isPaymentExcluded(senderId, logId);
+                paymentHistory[senderId].push({
+                  id: logId,
+                  timestamp: Number(log.timestamp) * 1000,
+                  weekKey,
+                  type: 'item',
+                  amount: totalAdded,
+                  medium: describeLogMedium(log),
+                  excluded
+                });
+              }
+            }
           }
         }
       }
-    }
 
-    syncExcludedPaymentsWithWeeklyData(paymentHistory, weeklyData);
+      syncExcludedPaymentsWithWeeklyData(paymentHistory, weeklyData);
 
-    lastEmployeesCache = employees;
-    lastWeeklyDataCache = weeklyData;
-    Object.keys(employees).forEach(id => {
-      if (!paymentHistory[id]) {
-        paymentHistory[id] = [];
-      }
-    });
-    Object.keys(paymentHistory).forEach(id => {
-      paymentHistory[id].sort((a, b) => {
-        const timeA = Number(a && a.timestamp);
-        const timeB = Number(b && b.timestamp);
-        return timeA - timeB;
+      lastEmployeesCache = employees;
+      lastWeeklyDataCache = weeklyData;
+      Object.keys(employees).forEach(id => {
+        if (!paymentHistory[id]) {
+          paymentHistory[id] = [];
+        }
       });
-    });
-    lastPaymentHistoryCache = paymentHistory;
-    saveSettings(SETTINGS);
+      Object.keys(paymentHistory).forEach(id => {
+        paymentHistory[id].sort((a, b) => {
+          const timeA = Number(a && a.timestamp);
+          const timeB = Number(b && b.timestamp);
+          return timeA - timeB;
+        });
+      });
+      lastPaymentHistoryCache = paymentHistory;
+      saveSettings(SETTINGS);
 
-    renderOverview(weeklyData, employees);
-    if (SETTINGS.enableEmployeeMenu) {
-      renderEmployeeMenu(employees);
-    }
-    renderPaymentHistory(paymentHistory, employees);
-    if (!SETTINGS.enableEmployeeMenu && currentView === "employees") {
-      switchView("overview");
-    }
-    if (currentView === "payments") {
       renderPaymentHistory(paymentHistory, employees);
+      renderOverview(weeklyData, employees);
+      if (SETTINGS.enableEmployeeMenu) {
+        renderEmployeeMenu(employees);
+      }
+      if (!SETTINGS.enableEmployeeMenu && currentView === "employees") {
+        switchView("overview");
+      }
+      if (currentView === "payments") {
+        renderPaymentHistory(paymentHistory, employees);
+      }
+      const employeeCount = Object.keys(employees).length;
+      const mode = SETTINGS.testMode ? "test mode" : (SETTINGS.manualMode ? "manual mode" : "live API");
+      setStatus(`Loaded ${employeeCount} employee${employeeCount === 1 ? "" : "s"} (${mode})${forceRefresh ? " • refreshed" : ""}.`, "success");
+    } catch (err) {
+      console.error("Failed to fetch tax data", err);
+      setStatus(`Failed to load data: ${err && err.message ? err.message : "Unknown error"}`, "error");
     }
   }
 
