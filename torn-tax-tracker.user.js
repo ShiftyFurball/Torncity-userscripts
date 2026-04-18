@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      7.17
-// @description  Track weekly company tax from employees in Torn with Torn-styled table, draggable/resizable panel, reminders, overpayment tracking, totals row, and Test Mode.
+// @version      7.19
+// @description  Track weekly company tax from employees in Torn with Torn-styled table, draggable/resizable panel, company profiles, reminders, overpayment tracking, totals row, and Test Mode.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
 // @grant        none
@@ -14,8 +14,10 @@
 (function () {
   'use strict';
 
-  const STORAGE_KEY_SETTINGS = "torn_tax_settings_v4";
+  const STORAGE_KEY_SETTINGS_PREFIX = "torn_tax_settings_v5";
+  const STORAGE_KEY_PROFILE_META = "torn_tax_profile_meta_v1";
   const STORAGE_KEY_ITEM_CATALOG = "torn_tax_item_catalog_v1";
+  const DEFAULT_PROFILE_ID = "default";
   const ITEM_CATALOG_MAX_AGE = 24 * 60 * 60 * 1000; // 24 hours
 
   const DEFAULT_SETTINGS = {
@@ -47,8 +49,49 @@
 
   const WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
-  function loadSettings() {
-    const saved = localStorage.getItem(STORAGE_KEY_SETTINGS);
+  function sanitizeProfileId(id) {
+    const fallback = DEFAULT_PROFILE_ID;
+    if (typeof id !== "string") {
+      return fallback;
+    }
+    const cleaned = id.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/-{2,}/g, "-").replace(/^-+|-+$/g, "");
+    return cleaned || fallback;
+  }
+
+  function getSettingsStorageKey(profileId) {
+    return `${STORAGE_KEY_SETTINGS_PREFIX}_${sanitizeProfileId(profileId)}`;
+  }
+
+  function loadProfileMeta() {
+    const fallback = { activeProfileId: DEFAULT_PROFILE_ID, knownProfileIds: [DEFAULT_PROFILE_ID] };
+    const saved = localStorage.getItem(STORAGE_KEY_PROFILE_META);
+    if (!saved) {
+      return fallback;
+    }
+    try {
+      const parsed = JSON.parse(saved);
+      const known = Array.isArray(parsed.knownProfileIds) ? parsed.knownProfileIds.map(sanitizeProfileId).filter(Boolean) : [];
+      const uniqueKnown = Array.from(new Set([DEFAULT_PROFILE_ID, ...known]));
+      return {
+        activeProfileId: sanitizeProfileId(parsed.activeProfileId),
+        knownProfileIds: uniqueKnown
+      };
+    } catch (err) {
+      console.warn("Failed to parse profile metadata, resetting to defaults.", err);
+      return fallback;
+    }
+  }
+
+  function saveProfileMeta(meta) {
+    const normalized = {
+      activeProfileId: sanitizeProfileId(meta && meta.activeProfileId),
+      knownProfileIds: Array.from(new Set([DEFAULT_PROFILE_ID].concat(Array.isArray(meta && meta.knownProfileIds) ? meta.knownProfileIds.map(sanitizeProfileId) : [])))
+    };
+    localStorage.setItem(STORAGE_KEY_PROFILE_META, JSON.stringify(normalized));
+  }
+
+  function loadSettings(profileId) {
+    const saved = localStorage.getItem(getSettingsStorageKey(profileId));
     if (!saved) {
       return Object.assign({}, DEFAULT_SETTINGS);
     }
@@ -61,7 +104,11 @@
     }
   }
   function saveSettings(s) {
-    localStorage.setItem(STORAGE_KEY_SETTINGS, JSON.stringify(s));
+    if (!PROFILE_META.knownProfileIds.includes(ACTIVE_PROFILE_ID)) {
+      PROFILE_META.knownProfileIds.push(ACTIVE_PROFILE_ID);
+      saveProfileMeta(PROFILE_META);
+    }
+    localStorage.setItem(getSettingsStorageKey(ACTIVE_PROFILE_ID), JSON.stringify(s));
   }
 
   function normalizeItemName(name) {
@@ -301,48 +348,59 @@
     return numeric;
   }
 
-  let SETTINGS = loadSettings();
+  let PROFILE_META = loadProfileMeta();
+  let ACTIVE_PROFILE_ID = sanitizeProfileId(PROFILE_META.activeProfileId);
+  PROFILE_META.activeProfileId = ACTIVE_PROFILE_ID;
+  if (!PROFILE_META.knownProfileIds.includes(ACTIVE_PROFILE_ID)) {
+    PROFILE_META.knownProfileIds.push(ACTIVE_PROFILE_ID);
+  }
+  saveProfileMeta(PROFILE_META);
+  let SETTINGS = loadSettings(ACTIVE_PROFILE_ID);
 
-  // Migrate legacy saves that only had a single required tax amount
-  if (SETTINGS.requiredTax && !SETTINGS.defaultMoneyTax) {
-    SETTINGS.defaultMoneyTax = SETTINGS.requiredTax;
+  function ensureSettingsShapeInPlace() {
+    // Migrate legacy saves that only had a single required tax amount
+    if (SETTINGS.requiredTax && !SETTINGS.defaultMoneyTax) {
+      SETTINGS.defaultMoneyTax = SETTINGS.requiredTax;
+    }
+    if (!SETTINGS.memberRequirements) {
+      SETTINGS.memberRequirements = {};
+    }
+    if (!SETTINGS.reminderMessage) {
+      SETTINGS.reminderMessage = DEFAULT_SETTINGS.reminderMessage;
+    }
+    if (typeof SETTINGS.enableEmployeeMenu !== "boolean") {
+      SETTINGS.enableEmployeeMenu = DEFAULT_SETTINGS.enableEmployeeMenu;
+    }
+    if (!SETTINGS.taxItemName) {
+      SETTINGS.taxItemName = DEFAULT_SETTINGS.taxItemName;
+    }
+    if (!SETTINGS.defaultItemTax) {
+      SETTINGS.defaultItemTax = DEFAULT_SETTINGS.defaultItemTax;
+    }
+    if (SETTINGS.defaultRequirementType !== "item" && SETTINGS.defaultRequirementType !== "money") {
+      SETTINGS.defaultRequirementType = DEFAULT_SETTINGS.defaultRequirementType;
+    }
+    if (!Number.isInteger(SETTINGS.paymentDueWeekday) || SETTINGS.paymentDueWeekday < 0 || SETTINGS.paymentDueWeekday > 6) {
+      SETTINGS.paymentDueWeekday = DEFAULT_SETTINGS.paymentDueWeekday;
+    }
+    if (!SETTINGS.memberRequirementResets || typeof SETTINGS.memberRequirementResets !== "object") {
+      SETTINGS.memberRequirementResets = {};
+    }
+    if (!SETTINGS.memberWeekExclusions || typeof SETTINGS.memberWeekExclusions !== "object") {
+      SETTINGS.memberWeekExclusions = {};
+    }
+    if (!SETTINGS.memberWeekCarrybacks || typeof SETTINGS.memberWeekCarrybacks !== "object") {
+      SETTINGS.memberWeekCarrybacks = {};
+    }
+    if (!SETTINGS.excludedPayments || typeof SETTINGS.excludedPayments !== "object") {
+      SETTINGS.excludedPayments = {};
+    }
+    if (typeof SETTINGS.defaultRequirementReset !== "string") {
+      SETTINGS.defaultRequirementReset = `${SETTINGS.startYear}-W${SETTINGS.startWeek}`;
+    }
   }
-  if (!SETTINGS.memberRequirements) {
-    SETTINGS.memberRequirements = {};
-  }
-  if (!SETTINGS.reminderMessage) {
-    SETTINGS.reminderMessage = DEFAULT_SETTINGS.reminderMessage;
-  }
-  if (typeof SETTINGS.enableEmployeeMenu !== "boolean") {
-    SETTINGS.enableEmployeeMenu = DEFAULT_SETTINGS.enableEmployeeMenu;
-  }
-  if (!SETTINGS.taxItemName) {
-    SETTINGS.taxItemName = DEFAULT_SETTINGS.taxItemName;
-  }
-  if (!SETTINGS.defaultItemTax) {
-    SETTINGS.defaultItemTax = DEFAULT_SETTINGS.defaultItemTax;
-  }
-  if (SETTINGS.defaultRequirementType !== "item" && SETTINGS.defaultRequirementType !== "money") {
-    SETTINGS.defaultRequirementType = DEFAULT_SETTINGS.defaultRequirementType;
-  }
-  if (!Number.isInteger(SETTINGS.paymentDueWeekday) || SETTINGS.paymentDueWeekday < 0 || SETTINGS.paymentDueWeekday > 6) {
-    SETTINGS.paymentDueWeekday = DEFAULT_SETTINGS.paymentDueWeekday;
-  }
-  if (!SETTINGS.memberRequirementResets || typeof SETTINGS.memberRequirementResets !== "object") {
-    SETTINGS.memberRequirementResets = {};
-  }
-  if (!SETTINGS.memberWeekExclusions || typeof SETTINGS.memberWeekExclusions !== "object") {
-    SETTINGS.memberWeekExclusions = {};
-  }
-  if (!SETTINGS.memberWeekCarrybacks || typeof SETTINGS.memberWeekCarrybacks !== "object") {
-    SETTINGS.memberWeekCarrybacks = {};
-  }
-  if (!SETTINGS.excludedPayments || typeof SETTINGS.excludedPayments !== "object") {
-    SETTINGS.excludedPayments = {};
-  }
-  if (typeof SETTINGS.defaultRequirementReset !== "string") {
-    SETTINGS.defaultRequirementReset = `${SETTINGS.startYear}-W${SETTINGS.startWeek}`;
-  }
+
+  ensureSettingsShapeInPlace();
 
   function sanitizeSettingsInPlace() {
     const parsedYear = parseInt(SETTINGS.startYear, 10);
@@ -356,6 +414,19 @@
   }
 
   sanitizeSettingsInPlace();
+
+  function switchToProfile(profileId) {
+    const nextProfileId = sanitizeProfileId(profileId);
+    ACTIVE_PROFILE_ID = nextProfileId;
+    PROFILE_META.activeProfileId = nextProfileId;
+    if (!PROFILE_META.knownProfileIds.includes(nextProfileId)) {
+      PROFILE_META.knownProfileIds.push(nextProfileId);
+    }
+    saveProfileMeta(PROFILE_META);
+    SETTINGS = loadSettings(nextProfileId);
+    ensureSettingsShapeInPlace();
+    sanitizeSettingsInPlace();
+  }
 
   let lastEmployeesCache = {};
   let lastWeeklyDataCache = {};
@@ -809,6 +880,13 @@
 
     editor.innerHTML = `
       <h3 style="margin:0 0 10px 0;">Settings</h3>
+      <label style="display:block;">Company Profile ID:
+        <input id="setProfileId" type="text" value="${ACTIVE_PROFILE_ID}" list="profileList" style="width:100%;box-sizing:border-box;background:#111;color:#0f0;border:1px solid #555;margin-top:6px;">
+        <datalist id="profileList">
+          ${PROFILE_META.knownProfileIds.map(id => `<option value="${escapeHtml(id)}"></option>`).join("")}
+        </datalist>
+        <small style="color:#ccc;">Use separate profile IDs to keep independent tax history for different companies (example: <code>lingerie</code>, <code>oil-rig</code>).</small>
+      </label><br>
       <label style="display:block;">API Key:
         <input id="setApiKey" type="text" value="${SETTINGS.apiKey}" style="width:100%;box-sizing:border-box;background:#111;color:#0f0;border:1px solid #555;margin-top:6px;">
       </label><br>
@@ -912,6 +990,11 @@
     }
     editor.querySelector("#cancelSet").addEventListener("click", () => editor.remove());
     editor.querySelector("#saveSet").addEventListener("click", () => {
+      const requestedProfileId = sanitizeProfileId((editor.querySelector("#setProfileId").value || ACTIVE_PROFILE_ID));
+      const isProfileChange = requestedProfileId !== ACTIVE_PROFILE_ID;
+      if (isProfileChange) {
+        switchToProfile(requestedProfileId);
+      }
       const previousDefaults = getDefaultRequirement();
       SETTINGS.startYear = parseInt(editor.querySelector("#setYear").value, 10);
       SETTINGS.startWeek = parseInt(editor.querySelector("#setWeek").value, 10);
@@ -952,6 +1035,9 @@
         switchView("overview");
       }
       fetchData();
+      if (isProfileChange) {
+        setStatus(`Switched to profile "${requestedProfileId}" and saved settings.`, "success");
+      }
     });
   }
 
@@ -1290,7 +1376,7 @@
       }
       const employeeCount = Object.keys(employees).length;
       const mode = SETTINGS.testMode ? "test mode" : (SETTINGS.manualMode ? "manual mode" : "live API");
-      setStatus(`Loaded ${employeeCount} employee${employeeCount === 1 ? "" : "s"} (${mode})${forceRefresh ? " • refreshed" : ""}.`, "success");
+      setStatus(`Loaded ${employeeCount} employee${employeeCount === 1 ? "" : "s"} (${mode}, profile: ${ACTIVE_PROFILE_ID})${forceRefresh ? " • refreshed" : ""}.`, "success");
     } catch (err) {
       console.error("Failed to fetch tax data", err);
       setStatus(`Failed to load data: ${err && err.message ? err.message : "Unknown error"}`, "error");
@@ -1967,7 +2053,7 @@
         }
       });
 
-      html += '<div style="padding:12px;border:1px solid #333;border-radius:6px;background:#1f1f1f;">';
+      html += '<div style="padding:12px;border:1px solid #333;border-radius:6px;background:#1f1f1f;color:#ddd;">';
       html += `<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;">`;
       html += `<strong style="color:#fff;font-size:13px;">${escapeHtml(employeeName)} [${escapeHtml(id)}]</strong>`;
       html += `<span style="color:#888;font-size:11px;">Showing payments since ${escapeHtml(baselineKey)}</span>`;
@@ -1993,11 +2079,11 @@
         });
         const req = getMemberRequirement(id);
         const rollupWeeks = Object.keys(weeklyRollup).sort(compareWeekKeys);
-        html += '<div style="margin-top:8px;padding:8px;border:1px solid #333;border-radius:6px;background:#181818;">';
+        html += '<div style="margin-top:8px;padding:8px;border:1px solid #333;border-radius:6px;background:#181818;color:#ddd;">';
         html += '<div style="color:#bbb;font-size:11px;margin-bottom:6px;">Weekly method summary (auto-detected from logs):</div>';
         html += '<table style="width:100%;border-collapse:collapse;font-size:11px;">';
         html += '<thead><tr style="background:#262626;color:#ddd;">';
-        html += '<th style="padding:5px;border:1px solid #333;text-align:left;">Week</th><th style="padding:5px;border:1px solid #333;text-align:left;">Money</th><th style="padding:5px;border:1px solid #333;text-align:left;">Xanax</th><th style="padding:5px;border:1px solid #333;text-align:left;">Detected</th><th style="padding:5px;border:1px solid #333;text-align:left;">Status</th>';
+        html += '<th style="padding:5px;border:1px solid #333;text-align:left;color:#ddd;">Week</th><th style="padding:5px;border:1px solid #333;text-align:left;color:#ddd;">Money</th><th style="padding:5px;border:1px solid #333;text-align:left;color:#ddd;">Xanax</th><th style="padding:5px;border:1px solid #333;text-align:left;color:#ddd;">Detected</th><th style="padding:5px;border:1px solid #333;text-align:left;color:#ddd;">Status</th>';
         html += '</tr></thead><tbody>';
         rollupWeeks.forEach(weekKey => {
           const wk = weeklyRollup[weekKey];
@@ -2010,11 +2096,11 @@
           }
           const status = met ? '<span style="color:#66ff66;">Met</span>' : '<span style="color:#ff9999;">Not met</span>';
           html += '<tr style="background:#1d1d1d;color:#ccc;">';
-          html += `<td style="padding:5px;border:1px solid #333;">${escapeHtml(weekKey)}</td>`;
-          html += `<td style="padding:5px;border:1px solid #333;">$${(wk.money || 0).toLocaleString()}</td>`;
-          html += `<td style="padding:5px;border:1px solid #333;">${(wk.items || 0).toLocaleString()}</td>`;
-          html += `<td style="padding:5px;border:1px solid #333;">${escapeHtml(method)}</td>`;
-          html += `<td style="padding:5px;border:1px solid #333;">${status}</td>`;
+          html += `<td style="padding:5px;border:1px solid #333;color:#ddd;">${escapeHtml(weekKey)}</td>`;
+          html += `<td style="padding:5px;border:1px solid #333;color:#ddd;">$${(wk.money || 0).toLocaleString()}</td>`;
+          html += `<td style="padding:5px;border:1px solid #333;color:#ddd;">${(wk.items || 0).toLocaleString()}</td>`;
+          html += `<td style="padding:5px;border:1px solid #333;color:#ddd;">${escapeHtml(method)}</td>`;
+          html += `<td style="padding:5px;border:1px solid #333;color:#ddd;">${status}</td>`;
           html += '</tr>';
         });
         html += '</tbody></table></div>';
@@ -2061,7 +2147,7 @@
           html += `<td style="padding:6px;border:1px solid #333;color:${textColor};">${detailsLabel || '<span style="color:#888;">&mdash;</span>'}</td>`;
           html += `<td style="padding:6px;border:1px solid #333;color:${textColor};">${countedLabel}</td>`;
           if (paymentId) {
-            html += `<td style="padding:6px;border:1px solid #333;">
+            html += `<td style="padding:6px;border:1px solid #333;color:${textColor};">
               <button class="toggle-payment-exclusion" data-employee="${escapeHtml(String(id))}" data-payment="${escapeHtml(paymentId)}" data-excluded="${excluded}" title="${escapeHtml(actionTitle)}" style="${buttonStyle}">${escapeHtml(actionLabel)}</button>
             </td>`;
           } else {

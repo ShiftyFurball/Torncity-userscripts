@@ -5,6 +5,7 @@ Small collection repo for Torn userscripts.
 ## Current scripts
 
 - `torn-tax-tracker.user.js` — company tax tracker panel for Torn (overview, payments, employee management, reminders).
+  - Supports per-company profile IDs so you can keep separate tracking data if you move companies or manage multiple companies.
 
 ## Repository layout
 
