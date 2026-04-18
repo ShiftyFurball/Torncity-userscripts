@@ -688,10 +688,24 @@
     saveSettings(SETTINGS);
   }
 
+  const LAYER_Z_INDEX = {
+    floatingButton: 2147483644,
+    panel: 2147483645,
+    modal: 2147483646,
+    active: 2147483647
+  };
+
+  function bringToFront(el) {
+    if (!el) {
+      return;
+    }
+    el.style.zIndex = String(LAYER_Z_INDEX.active);
+  }
+
   // Floating open button
   const button = document.createElement("button");
   Object.assign(button.style, {
-    position: "fixed", top: "30%", right: "0%", zIndex: "9999",
+    position: "fixed", top: "30%", right: "0%", zIndex: String(LAYER_Z_INDEX.floatingButton),
     backgroundColor: "#2e8b57", color: "#fff", border: "none",
     padding: "6px 10px", borderRadius: "6px 0 0 6px", cursor: "pointer"
   });
@@ -704,7 +718,7 @@
   Object.assign(panel.style, {
     display: "none", position: "fixed", top: "10%", left: "10%",
     width: "80%", height: "75%", background: "#1b1b1b", color: "#ccc",
-    padding: "0", zIndex: "10000", borderRadius: "6px", overflow: "hidden", flexDirection: "column",
+    padding: "0", zIndex: String(LAYER_Z_INDEX.panel), borderRadius: "6px", overflow: "hidden", flexDirection: "column",
     boxShadow: "0px 0px 15px rgba(0,0,0,0.7)", border: "1px solid #333",
     fontFamily: "'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', 'Apple Color Emoji', Verdana, sans-serif"
   });
@@ -807,6 +821,7 @@
       showApiPrompt();
       return;
     }
+    bringToFront(panel);
     panel.style.display = "flex";
     fetchData();
   });
@@ -843,6 +858,7 @@
   if (refreshButton) {
     refreshButton.addEventListener("click", () => fetchData(true));
   }
+  panel.addEventListener("mousedown", () => bringToFront(panel));
 
   switchView("overview");
 
@@ -850,7 +866,7 @@
     const editor = document.createElement("div");
     Object.assign(editor.style, {
       position: "fixed", top: "30%", left: "35%", width: "30%",
-      background: "#222", color: "#fff", padding: "15px", zIndex: "11000",
+      background: "#222", color: "#fff", padding: "15px", zIndex: String(LAYER_Z_INDEX.modal),
       borderRadius: "6px", boxShadow: "0px 0px 10px rgba(0,0,0,0.7)"
     });
     editor.innerHTML = `
@@ -861,6 +877,7 @@
       </div>
     `;
     document.body.appendChild(editor);
+    bringToFront(editor);
     editor.querySelector("#saveApi").addEventListener("click", () => {
       SETTINGS.apiKey = editor.querySelector("#apiInput").value.trim();
       saveSettings(SETTINGS);
@@ -874,12 +891,12 @@
     const editor = document.createElement("div");
     Object.assign(editor.style, {
       position: "fixed", top: "18%", left: "34%", width: "32%",
-      background: "#222", color: "#fff", padding: "15px", zIndex: "11000",
+      background: "#222", color: "#fff", padding: "15px", zIndex: String(LAYER_Z_INDEX.modal),
       borderRadius: "8px", boxShadow: "0px 0px 10px rgba(0,0,0,0.7)"
     });
 
     editor.innerHTML = `
-      <h3 style="margin:0 0 10px 0;">Settings</h3>
+      <div id="settingsDragHandle" style="cursor:move;font-weight:bold;margin:0 0 10px 0;user-select:none;">Settings</div>
       <label style="display:block;">Company Profile ID:
         <input id="setProfileId" type="text" value="${ACTIVE_PROFILE_ID}" list="profileList" style="width:100%;box-sizing:border-box;background:#111;color:#0f0;border:1px solid #555;margin-top:6px;">
         <datalist id="profileList">
@@ -949,6 +966,11 @@
       </div>
     `;
     document.body.appendChild(editor);
+    bringToFront(editor);
+    const settingsDragHandle = editor.querySelector("#settingsDragHandle");
+    if (settingsDragHandle) {
+      makeDraggable(editor, settingsDragHandle);
+    }
     const defaultTypeSelect = editor.querySelector("#setDefaultRequirementType");
     const itemNameInput = editor.querySelector("#setItemName");
     if (defaultTypeSelect && itemNameInput) {
@@ -1045,7 +1067,7 @@
     const editor = document.createElement("div");
     Object.assign(editor.style, {
       position: "fixed", top: "20%", left: "30%", width: "40%",
-      background: "#222", color: "#fff", padding: "15px", zIndex: "11000",
+      background: "#222", color: "#fff", padding: "15px", zIndex: String(LAYER_Z_INDEX.modal),
       borderRadius: "8px", boxShadow: "0px 0px 10px rgba(0,0,0,0.7)"
     });
 
@@ -1066,6 +1088,7 @@
       </div>
     `;
     document.body.appendChild(editor);
+    bringToFront(editor);
 
     editor.querySelector("#cancelEmp").addEventListener("click", () => editor.remove());
     editor.querySelector("#saveEmp").addEventListener("click", () => {
@@ -1512,10 +1535,54 @@
   }
 
   function makeDraggable(el, handle) {
-    let offsetX = 0, offsetY = 0, isDown = false;
-    handle.addEventListener('mousedown', e => { isDown = true; offsetX = el.offsetLeft - e.clientX; offsetY = el.offsetTop - e.clientY; document.body.style.userSelect = "none"; });
-    document.addEventListener('mouseup', () => { isDown = false; document.body.style.userSelect = ""; });
-    document.addEventListener('mousemove', e => { if (isDown) { el.style.left = (e.clientX + offsetX) + 'px'; el.style.top = (e.clientY + offsetY) + 'px'; } });
+    let offsetX = 0;
+    let offsetY = 0;
+    let isDown = false;
+    let dragged = false;
+    let suppressClick = false;
+
+    handle.addEventListener('mousedown', e => {
+      isDown = true;
+      dragged = false;
+      offsetX = el.offsetLeft - e.clientX;
+      offsetY = el.offsetTop - e.clientY;
+      document.body.style.userSelect = "none";
+      bringToFront(el);
+      e.preventDefault();
+      e.stopPropagation();
+    });
+
+    document.addEventListener('mouseup', e => {
+      if (!isDown) {
+        return;
+      }
+      isDown = false;
+      document.body.style.userSelect = "";
+      if (dragged) {
+        suppressClick = true;
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    }, true);
+
+    document.addEventListener('mousemove', e => {
+      if (!isDown) {
+        return;
+      }
+      dragged = true;
+      el.style.left = (e.clientX + offsetX) + 'px';
+      el.style.top = (e.clientY + offsetY) + 'px';
+      e.preventDefault();
+    });
+
+    document.addEventListener('click', e => {
+      if (!suppressClick) {
+        return;
+      }
+      suppressClick = false;
+      e.preventDefault();
+      e.stopPropagation();
+    }, true);
   }
 
   function makeResizable(el) {
