@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      7.16
+// @version      7.17
 // @description  Track weekly company tax from employees in Torn with Torn-styled table, draggable/resizable panel, reminders, overpayment tracking, totals row, and Test Mode.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -35,6 +35,7 @@
     defaultMoneyTax: 10000000,
     defaultItemTax: 7,
     defaultRequirementType: "money",
+    paymentDueWeekday: 0,
     allowPrepaymentRollover: true,
     taxItemName: "Xanax",
     reminderMessage: "Hi {name}, you currently owe {amount}. Please pay as soon as possible. Thanks!",
@@ -43,6 +44,8 @@
     // Legacy field kept for backwards compatibility with older saves
     requiredTax: 10000000
   };
+
+  const WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
   function loadSettings() {
     const saved = localStorage.getItem(STORAGE_KEY_SETTINGS);
@@ -322,6 +325,9 @@
   if (SETTINGS.defaultRequirementType !== "item" && SETTINGS.defaultRequirementType !== "money") {
     SETTINGS.defaultRequirementType = DEFAULT_SETTINGS.defaultRequirementType;
   }
+  if (!Number.isInteger(SETTINGS.paymentDueWeekday) || SETTINGS.paymentDueWeekday < 0 || SETTINGS.paymentDueWeekday > 6) {
+    SETTINGS.paymentDueWeekday = DEFAULT_SETTINGS.paymentDueWeekday;
+  }
   if (!SETTINGS.memberRequirementResets || typeof SETTINGS.memberRequirementResets !== "object") {
     SETTINGS.memberRequirementResets = {};
   }
@@ -345,6 +351,8 @@
     SETTINGS.startYear = Number.isFinite(parsedYear) && parsedYear >= 2000 ? parsedYear : DEFAULT_SETTINGS.startYear;
     SETTINGS.startWeek = Number.isFinite(parsedWeek) ? Math.min(53, Math.max(1, parsedWeek)) : DEFAULT_SETTINGS.startWeek;
     SETTINGS.maxWeeks = Number.isFinite(parsedMaxWeeks) ? Math.min(52, Math.max(1, parsedMaxWeeks)) : DEFAULT_SETTINGS.maxWeeks;
+    const parsedDueWeekday = parseInt(SETTINGS.paymentDueWeekday, 10);
+    SETTINGS.paymentDueWeekday = Number.isFinite(parsedDueWeekday) ? Math.min(6, Math.max(0, parsedDueWeekday)) : DEFAULT_SETTINGS.paymentDueWeekday;
   }
 
   sanitizeSettingsInPlace();
@@ -823,6 +831,11 @@
       <label>Max Weeks to Display:
         <input id="setMaxWeeks" type="number" value="${SETTINGS.maxWeeks}" style="width:90px;background:#111;color:#0f0;border:1px solid #555;margin-left:8px;">
       </label><br><br>
+      <label>Payment due day:
+        <select id="setDueWeekday" style="width:140px;background:#111;color:#0f0;border:1px solid #555;margin-left:8px;">
+          ${WEEKDAY_NAMES.map((day, idx) => `<option value="${idx}" ${Number(SETTINGS.paymentDueWeekday) === idx ? "selected" : ""}>${day}</option>`).join("")}
+        </select>
+      </label><br><br>
       <label><input id="manualMode" type="checkbox" ${SETTINGS.manualMode ? "checked" : ""}> Manual Employees Mode</label><br><br>
       <label><input id="testMode" type="checkbox" ${SETTINGS.testMode ? "checked" : ""}> Enable Test Mode (fake data)</label><br><br>
       <label><input id="enableEmployeeMenu" type="checkbox" ${SETTINGS.enableEmployeeMenu ? "checked" : ""}> Enable Employees Menu</label><br><br>
@@ -911,6 +924,7 @@
       SETTINGS.apiKey = apiInput ? apiInput.value.trim() : SETTINGS.apiKey;
       const typeSelect = editor.querySelector("#setDefaultRequirementType");
       SETTINGS.defaultRequirementType = typeSelect && typeSelect.value === "item" ? "item" : "money";
+      SETTINGS.paymentDueWeekday = parseInt(editor.querySelector("#setDueWeekday").value, 10);
       SETTINGS.defaultMoneyTax = parseInt(editor.querySelector("#setDefaultMoney").value, 10) || DEFAULT_SETTINGS.defaultMoneyTax;
       SETTINGS.taxItemName = (editor.querySelector("#setItemName").value || DEFAULT_SETTINGS.taxItemName).trim();
       SETTINGS.defaultItemTax = parseInt(editor.querySelector("#setDefaultItem").value, 10) || DEFAULT_SETTINGS.defaultItemTax;
@@ -1366,6 +1380,30 @@
       startLabel,
       fullStartLabel
     };
+  }
+
+  function getNextDueDateLabel() {
+    const dueWeekday = Number(SETTINGS.paymentDueWeekday) || 0;
+    const now = new Date();
+    const today = now.getDay();
+    let delta = dueWeekday - today;
+    if (delta < 0) {
+      delta += 7;
+    }
+    const dueDate = new Date(now);
+    dueDate.setDate(now.getDate() + delta);
+    const dueLabel = dueDate.toLocaleDateString(undefined, {
+      weekday: 'long',
+      month: 'short',
+      day: '2-digit'
+    });
+    if (delta === 0) {
+      return `${dueLabel} (today)`;
+    }
+    if (delta === 1) {
+      return `${dueLabel} (tomorrow)`;
+    }
+    return `${dueLabel} (in ${delta} days)`;
   }
 
   function getEmployeeJoinWeek(record) {
@@ -1877,8 +1915,11 @@
       return nameA.localeCompare(nameB);
     });
 
+    const dueDayName = WEEKDAY_NAMES[Number(SETTINGS.paymentDueWeekday) || 0] || WEEKDAY_NAMES[0];
     let html = '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:10px;">';
     html += '<div style="color:#ccc;font-size:11px;flex:1 1 260px;">Entries use your local timezone. Payments are shown from the configured start week or the employee\'s join week, whichever is later. Carryback adjustments may display earlier weeks.</div>';
+    html += `<span style="background:#1f3552;color:#9fd3ff;border:1px solid #35598a;border-radius:999px;padding:4px 10px;font-size:11px;">Due day: ${escapeHtml(dueDayName)}</span>`;
+    html += `<span style="background:#2b2b2b;color:#ddd;border:1px solid #444;border-radius:999px;padding:4px 10px;font-size:11px;">Next due: ${escapeHtml(getNextDueDateLabel())}</span>`;
     html += '<button id="refreshPayments" style="background:#2e8b57;color:white;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;">Refresh payments</button>';
     html += '</div>';
     html += '<div style="display:flex;flex-direction:column;gap:12px;">';
@@ -1935,6 +1976,49 @@
       if (entries.length === 0) {
         html += '<div style="color:#888;margin-top:8px;">No payments recorded during this period.</div>';
       } else {
+        const weeklyRollup = {};
+        entries.forEach(entry => {
+          const wk = entry.weekKey || 'Unknown';
+          if (!weeklyRollup[wk]) {
+            weeklyRollup[wk] = { money: 0, items: 0, counted: 0 };
+          }
+          if (!entry.excluded) {
+            weeklyRollup[wk].counted += 1;
+            if (entry.type === 'money') {
+              weeklyRollup[wk].money += Number(entry.amount) || 0;
+            } else if (entry.type === 'item') {
+              weeklyRollup[wk].items += Number(entry.amount) || 0;
+            }
+          }
+        });
+        const req = getMemberRequirement(id);
+        const rollupWeeks = Object.keys(weeklyRollup).sort(compareWeekKeys);
+        html += '<div style="margin-top:8px;padding:8px;border:1px solid #333;border-radius:6px;background:#181818;">';
+        html += '<div style="color:#bbb;font-size:11px;margin-bottom:6px;">Weekly method summary (auto-detected from logs):</div>';
+        html += '<table style="width:100%;border-collapse:collapse;font-size:11px;">';
+        html += '<thead><tr style="background:#262626;color:#ddd;">';
+        html += '<th style="padding:5px;border:1px solid #333;text-align:left;">Week</th><th style="padding:5px;border:1px solid #333;text-align:left;">Money</th><th style="padding:5px;border:1px solid #333;text-align:left;">Xanax</th><th style="padding:5px;border:1px solid #333;text-align:left;">Detected</th><th style="padding:5px;border:1px solid #333;text-align:left;">Status</th>';
+        html += '</tr></thead><tbody>';
+        rollupWeeks.forEach(weekKey => {
+          const wk = weeklyRollup[weekKey];
+          const method = wk.money > 0 && wk.items > 0 ? 'Mixed' : wk.money > 0 ? 'Money' : wk.items > 0 ? SETTINGS.taxItemName : 'None';
+          let met = false;
+          if (req.type === 'item') {
+            met = wk.items >= req.amount;
+          } else {
+            met = wk.money >= req.amount;
+          }
+          const status = met ? '<span style="color:#66ff66;">Met</span>' : '<span style="color:#ff9999;">Not met</span>';
+          html += '<tr style="background:#1d1d1d;color:#ccc;">';
+          html += `<td style="padding:5px;border:1px solid #333;">${escapeHtml(weekKey)}</td>`;
+          html += `<td style="padding:5px;border:1px solid #333;">$${(wk.money || 0).toLocaleString()}</td>`;
+          html += `<td style="padding:5px;border:1px solid #333;">${(wk.items || 0).toLocaleString()}</td>`;
+          html += `<td style="padding:5px;border:1px solid #333;">${escapeHtml(method)}</td>`;
+          html += `<td style="padding:5px;border:1px solid #333;">${status}</td>`;
+          html += '</tr>';
+        });
+        html += '</tbody></table></div>';
+
         html += '<table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:12px;">';
         html += '<thead><tr style="background:#2a2a2a;color:#fff;font-weight:bold;">';
         html += '<th style="padding:6px;border:1px solid #333;text-align:left;">Date</th>';
