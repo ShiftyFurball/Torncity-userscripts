@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      7.15
+// @version      7.16
 // @description  Track weekly company tax from employees in Torn with Torn-styled table, draggable/resizable panel, reminders, overpayment tracking, totals row, and Test Mode.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -1335,6 +1335,39 @@
     return simple;
   }
 
+  function formatWeekHeader(weekKey) {
+    const parsed = parseWeekKey(weekKey);
+    if (!parsed) {
+      return { shortLabel: weekKey, fullLabel: weekKey, startLabel: 'Unknown' };
+    }
+    const [year, week] = parsed;
+    const startDate = getDateFromWeekKey(weekKey);
+    if (!startDate) {
+      return {
+        shortLabel: `W${week}`,
+        fullLabel: `Week ${week}, ${year}`,
+        startLabel: 'Unknown'
+      };
+    }
+    const startLabel = startDate.toLocaleDateString(undefined, {
+      month: 'short',
+      day: '2-digit',
+      timeZone: 'UTC'
+    });
+    const fullStartLabel = startDate.toLocaleDateString(undefined, {
+      year: 'numeric',
+      month: 'long',
+      day: '2-digit',
+      timeZone: 'UTC'
+    });
+    return {
+      shortLabel: `W${week}`,
+      fullLabel: `Week ${week}, ${year}`,
+      startLabel,
+      fullStartLabel
+    };
+  }
+
   function getEmployeeJoinWeek(record) {
     const ts = getEmployeeJoinTimestamp(record);
     if (!ts) {
@@ -1432,11 +1465,25 @@
     let grandItemBalance = 0;
     const owingList = [];
 
+    const firstVisibleWeek = displayWeeks[0];
+    const lastVisibleWeek = displayWeeks[displayWeeks.length - 1];
+    const firstVisibleWeekInfo = formatWeekHeader(firstVisibleWeek);
+    const lastVisibleWeekInfo = formatWeekHeader(lastVisibleWeek);
+    let periodHtml = '<div style="margin-bottom:10px;padding:8px 10px;background:#222;border:1px solid #3a3a3a;border-radius:6px;color:#ddd;font-size:12px;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;">';
+    periodHtml += `<span><strong>Showing:</strong> ${displayWeeks.length} week${displayWeeks.length === 1 ? '' : 's'}</span>`;
+    periodHtml += `<span><strong>Range:</strong> ${firstVisibleWeekInfo.fullLabel} (${firstVisibleWeekInfo.startLabel}) → ${lastVisibleWeekInfo.fullLabel} (${lastVisibleWeekInfo.startLabel})</span>`;
+    periodHtml += '</div>';
+
     let html = '<div style="overflow:auto;"><table style="width:100%; border-collapse: collapse; text-align:center; font-size:12px; background:#1b1b1b; color:#ccc;">';
     html += '<thead><tr style="background:#2a2a2a; color:#fff; font-weight:bold;">';
     html += '<th style="padding:8px;border:1px solid #444;text-align:left;position:sticky;left:0;background:#2a2a2a;z-index:2;">Employee</th>';
     displayWeeks.forEach(week => {
-      html += `<th style="padding:8px;border:1px solid #444;">${week}</th>`;
+      const weekInfo = formatWeekHeader(week);
+      const weekTitle = `${weekInfo.fullLabel} • Starts ${weekInfo.fullStartLabel || weekInfo.startLabel} (UTC)`;
+      html += `<th style="padding:6px;border:1px solid #444;min-width:88px;" title="${weekTitle}">
+        <div style="font-weight:bold;color:#fff;line-height:1.2;">${weekInfo.shortLabel}</div>
+        <div style="font-size:11px;color:#9fd3ff;line-height:1.2;">${weekInfo.startLabel}</div>
+      </th>`;
     });
     html += '<th style="padding:8px;border:1px solid #444;position:sticky;right:140px;background:#2a2a2a;z-index:2;">Total Paid</th>';
     html += '<th style="padding:8px;border:1px solid #444;position:sticky;right:0;background:#2a2a2a;z-index:2;">Balance</th></tr></thead><tbody>';
@@ -1726,7 +1773,7 @@
 
     html += '</tbody></table></div>';
 
-    const tipHtml = '<div style="margin-top:8px;color:#ccc;font-size:11px;">Click a week cell to exclude/include it for that employee. Alt+click to carry a payment back to the previous counted week. Excluded weeks show the ⏸ icon.<br>Money ticks stay green, item ticks use blue, mixed weeks use purple, and rollover coverage without a direct payment is gold. Wrong-medium payments highlight in teal or pink so you can spot them quickly.</div>';
+    const tipHtml = '<div style="margin-top:8px;color:#ccc;font-size:11px;line-height:1.5;">Click a week cell to exclude/include it for that employee. Alt+click to carry a payment back to the previous counted week.<br><strong>Legend:</strong> ✅ covered, ❌ short, ⏸ excluded, ↩️ carried back. Week headers show <em>week number</em> and the <em>start date (UTC)</em>.</div>';
 
     let summaryHtml = '<div style="margin-top:12px;padding:10px;background:#222;border:1px solid #444;border-radius:6px;">';
     summaryHtml += '<strong style="color:#fff;">Summary</strong><br>';
@@ -1760,7 +1807,7 @@
     }
     reminderHtml += '</div>';
 
-    overviewView.innerHTML = tipHtml + html + summaryHtml + reminderHtml;
+    overviewView.innerHTML = periodHtml + tipHtml + html + summaryHtml + reminderHtml;
 
     overviewView.querySelectorAll('.tax-week-cell').forEach(cell => {
       cell.addEventListener('click', event => {
