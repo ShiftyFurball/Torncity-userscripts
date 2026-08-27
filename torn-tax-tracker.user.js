@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      7.20
-// @description  Track weekly company tax from employees in Torn with Torn-styled table, draggable/resizable panel, company profiles, reminders, overpayment tracking, totals row, and Test Mode.
+// @version      7.21
+// @description  Track company tax from Torn logs with the same Sunday-start rolling window logic used by the Google Sheets tracker, plus profiles, reminders, overpayment tracking, totals row, and Test Mode.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
 // @grant        none
@@ -19,11 +19,16 @@
   const STORAGE_KEY_ITEM_CATALOG = "torn_tax_item_catalog_v1";
   const DEFAULT_PROFILE_ID = "default";
   const ITEM_CATALOG_MAX_AGE = 24 * 60 * 60 * 1000; // 24 hours
+  const DEFAULT_TAX_ITEM_ID = 206;
+  const ROLLING_WINDOW_WEEKS = 6;
+  const MILLIS_PER_DAY = 86400000;
+  const MILLIS_PER_WEEK = 7 * MILLIS_PER_DAY;
 
   const DEFAULT_SETTINGS = {
     startYear: new Date().getUTCFullYear(),
     startWeek: 40,
-    maxWeeks: 12,
+    maxWeeks: ROLLING_WINDOW_WEEKS,
+    maxLogPages: 25,
     manualMode: false,
     manualMembers: {},
     apiKey: "",
@@ -181,7 +186,7 @@
   }
 
   function formatWeekKey(year, week) {
-    return `${year}-W${week}`;
+    return `${Number(year)}-W${String(Number(week)).padStart(2, '0')}`;
   }
 
   function isWeekOnOrAfter(candidate, baseline) {
@@ -377,6 +382,9 @@
     if (!SETTINGS.defaultItemTax) {
       SETTINGS.defaultItemTax = DEFAULT_SETTINGS.defaultItemTax;
     }
+    if (!SETTINGS.maxLogPages) {
+      SETTINGS.maxLogPages = DEFAULT_SETTINGS.maxLogPages;
+    }
     if (SETTINGS.defaultRequirementType !== "item" && SETTINGS.defaultRequirementType !== "money") {
       SETTINGS.defaultRequirementType = DEFAULT_SETTINGS.defaultRequirementType;
     }
@@ -406,9 +414,11 @@
     const parsedYear = parseInt(SETTINGS.startYear, 10);
     const parsedWeek = parseInt(SETTINGS.startWeek, 10);
     const parsedMaxWeeks = parseInt(SETTINGS.maxWeeks, 10);
+    const parsedMaxLogPages = parseInt(SETTINGS.maxLogPages, 10);
     SETTINGS.startYear = Number.isFinite(parsedYear) && parsedYear >= 2000 ? parsedYear : DEFAULT_SETTINGS.startYear;
     SETTINGS.startWeek = Number.isFinite(parsedWeek) ? Math.min(53, Math.max(1, parsedWeek)) : DEFAULT_SETTINGS.startWeek;
     SETTINGS.maxWeeks = Number.isFinite(parsedMaxWeeks) ? Math.min(52, Math.max(1, parsedMaxWeeks)) : DEFAULT_SETTINGS.maxWeeks;
+    SETTINGS.maxLogPages = Number.isFinite(parsedMaxLogPages) ? Math.min(100, Math.max(1, parsedMaxLogPages)) : DEFAULT_SETTINGS.maxLogPages;
     const parsedDueWeekday = parseInt(SETTINGS.paymentDueWeekday, 10);
     SETTINGS.paymentDueWeekday = Number.isFinite(parsedDueWeekday) ? Math.min(6, Math.max(0, parsedDueWeekday)) : DEFAULT_SETTINGS.paymentDueWeekday;
   }
@@ -452,6 +462,17 @@
     return { type, amount, isDefault: false };
   }
 
+  function getMemberTaxRequirements(id) {
+    const req = getMemberRequirement(id);
+    const cashRequired = req.type === 'money' && !req.isDefault ? req.amount : SETTINGS.defaultMoneyTax;
+    const itemRequired = req.type === 'item' && !req.isDefault ? req.amount : SETTINGS.defaultItemTax;
+    return {
+      cash: Math.max(1, Number(cashRequired) || DEFAULT_SETTINGS.defaultMoneyTax),
+      items: Math.max(1, Number(itemRequired) || DEFAULT_SETTINGS.defaultItemTax),
+      display: req
+    };
+  }
+
   function getRequirementStartWeek(id, requirement) {
     if (SETTINGS.memberRequirementResets && typeof SETTINGS.memberRequirementResets[id] === "string") {
       return SETTINGS.memberRequirementResets[id];
@@ -477,7 +498,11 @@
     if (!container[employeeId] || typeof container[employeeId] !== "object") {
       return false;
     }
-    return !!container[employeeId][paymentId];
+    if (container[employeeId][paymentId]) {
+      return true;
+    }
+    const bareId = String(paymentId).replace(/^(money|cash|item|xanax):/, '');
+    return !!container[employeeId][bareId];
   }
 
   function setPaymentExcluded(employeeId, paymentId, excluded) {
@@ -952,6 +977,10 @@
       <label>Max Weeks to Display:
         <input id="setMaxWeeks" type="number" value="${SETTINGS.maxWeeks}" style="width:90px;background:#111;color:#0f0;border:1px solid #555;margin-left:8px;">
       </label><br><br>
+      <label>Max Log Pages:
+        <input id="setMaxLogPages" type="number" value="${SETTINGS.maxLogPages}" style="width:90px;background:#111;color:#0f0;border:1px solid #555;margin-left:8px;">
+      </label>
+      <small style="color:#ccc;display:block;margin:4px 0 12px 0;">Raise this if the refresh says the scan hit the page limit before the rolling period was complete.</small>
       <label>Payment due day:
         <select id="setDueWeekday" style="width:140px;background:#111;color:#0f0;border:1px solid #555;margin-left:8px;">
           ${WEEKDAY_NAMES.map((day, idx) => `<option value="${idx}" ${Number(SETTINGS.paymentDueWeekday) === idx ? "selected" : ""}>${day}</option>`).join("")}
@@ -1047,6 +1076,7 @@
       SETTINGS.startYear = parseInt(editor.querySelector("#setYear").value, 10);
       SETTINGS.startWeek = parseInt(editor.querySelector("#setWeek").value, 10);
       SETTINGS.maxWeeks = parseInt(editor.querySelector("#setMaxWeeks").value, 10);
+      SETTINGS.maxLogPages = parseInt(editor.querySelector("#setMaxLogPages").value, 10);
       SETTINGS.manualMode = editor.querySelector("#manualMode").checked;
       SETTINGS.testMode = editor.querySelector("#testMode").checked;
       SETTINGS.enableEmployeeMenu = editor.querySelector("#enableEmployeeMenu").checked;
@@ -1188,6 +1218,7 @@
     let employees = {};
     let weeklyData = {};
     let paymentHistory = {};
+    let logScanHitPageLimit = false;
     try {
       if (SETTINGS.testMode) {
         const fake = makeFakeData();
@@ -1266,53 +1297,30 @@
           }
         });
 
-        const usesItemTracking = SETTINGS.defaultRequirementType === 'item' || Object.values(SETTINGS.memberRequirements).some(req => req && req.type === 'item');
         const itemCatalog = await ensureItemCatalog();
         const configuredItemName = (SETTINGS.taxItemName || DEFAULT_SETTINGS.taxItemName).trim();
-        const configuredItemId = getItemIdForName(configuredItemName) || 206;
+        const configuredItemId = getItemIdForName(configuredItemName) || DEFAULT_TAX_ITEM_ID;
         const configuredItemDisplayName = configuredItemId === 206
           ? configuredItemName
           : ((itemCatalog.byId && itemCatalog.byId[configuredItemId] && itemCatalog.byId[configuredItemId].name) || configuredItemName);
 
-        const moneyRes = await fetch(`https://api.torn.com/user/?selections=log&log=4800,4810&key=${encodeURIComponent(SETTINGS.apiKey)}`);
-        const moneyData = await moneyRes.json();
-        if (moneyData && moneyData.error) {
-          throw new Error(`Torn API error (${moneyData.error.code}): ${moneyData.error.error}`);
-        }
-
-        const itemRes = await fetch(`https://api.torn.com/user/?selections=log&log=85,4102,4103&key=${encodeURIComponent(SETTINGS.apiKey)}`);
-        const itemData = await itemRes.json();
-        if (itemData && itemData.error) {
-          throw new Error(`Torn API error (${itemData.error.code}): ${itemData.error.error}`);
-        }
-
-        const logs = { ...(moneyData && moneyData.log ? moneyData.log : {}), ...(itemData && itemData.log ? itemData.log : {}) };
         const employeeNameIndex = buildEmployeeNameIndex(employees);
+        const logStartUnix = determineLogStartUnix();
+        const logResult = await fetchAllLogs('', logStartUnix, SETTINGS.maxLogPages);
+        const logs = logResult.logs;
 
-        const weekMap = generateWeekMapFrom(SETTINGS.startYear, SETTINGS.startWeek);
-        Object.keys(weekMap).forEach(key => {
+        generateRecentWeekKeys(SETTINGS.maxWeeks).forEach(key => {
           weeklyData[key] = {};
         });
 
         for (const id in logs) {
           const log = logs[id];
-          const ts = new Date(log.timestamp * 1000);
-          const [year, week] = getWeekNumber(ts);
-          if (year < SETTINGS.startYear || (year === SETTINGS.startYear && week < SETTINGS.startWeek)) continue;
-          const weekKey = `${year}-W${week}`;
-
-          const logType = Number(log.log);
-          const logCategory = Number(log.category);
-
+          const ts = unixLogDate(log);
+          if (!ts) continue;
+          const weekKey = getIsoWeekKey(ts);
+          if (!isWeekOnOrAfter(weekKey, formatWeekKey(SETTINGS.startYear, SETTINGS.startWeek))) continue;
           const logId = String(id);
-
-          let senderId = findEmployeeIdFromLog(log, employees, employeeNameIndex);
-          if (!senderId && usesItemTracking && (logType === 4102 || logType === 4103)) {
-            const directId = String(log?.data?.sender || log?.data?.receiver || "");
-            if (directId && employees[directId]) {
-              senderId = directId;
-            }
-          }
+          const senderId = findEmployeeIdFromLog(log, employees, employeeNameIndex);
           if (!senderId) continue;
 
           if (!weeklyData[weekKey]) {
@@ -1325,71 +1333,48 @@
             paymentHistory[senderId] = [];
           }
 
-          if (logType === 4800 || logType === 4810) {
-            const amount = Number(log?.data?.money ?? log?.data?.amount ?? 0);
-            if (Number.isFinite(amount)) {
-              const excluded = isPaymentExcluded(senderId, logId);
-              if (!excluded && amount > 0) {
-                weeklyData[weekKey][senderId].money += amount;
-              }
-              if (amount > 0) {
-                paymentHistory[senderId].push({
-                  id: logId,
-                  timestamp: Number(log.timestamp) * 1000,
-                  weekKey,
-                  type: 'money',
-                  amount,
-                  medium: describeLogMedium(log),
-                  excluded
-                });
-              }
+          const itemQuantity = getItemQuantityFromLog(log, configuredItemDisplayName, configuredItemId);
+          if (itemQuantity > 0) {
+            const paymentId = `item:${logId}`;
+            const excluded = isPaymentExcluded(senderId, paymentId);
+            if (!excluded) {
+              weeklyData[weekKey][senderId].items += itemQuantity;
             }
-          } else if (usesItemTracking && logCategory === 85) {
-            const qty = getItemQuantityFromLog(log, configuredItemDisplayName, configuredItemId);
-            if (qty > 0) {
-              const excluded = isPaymentExcluded(senderId, logId);
-              if (!excluded) {
-                weeklyData[weekKey][senderId].items += qty;
-              }
-              paymentHistory[senderId].push({
-                id: logId,
-                timestamp: Number(log.timestamp) * 1000,
-                weekKey,
-                type: 'item',
-                amount: qty,
-                medium: describeLogMedium(log),
-                excluded
-              });
-            }
-          } else if (usesItemTracking && (logType === 4102 || logType === 4103)) {
-            const directId = String(log?.data?.sender || log?.data?.receiver || "");
-            if (directId && directId === senderId) {
-              const items = Array.isArray(log?.data?.items) ? log.data.items : [];
-              let totalAdded = 0;
-              items.forEach(it => {
-                if (it && Number(it.id) === configuredItemId && Number.isFinite(Number(it.qty))) {
-                  const qty = Number(it.qty);
-                  const excluded = isPaymentExcluded(senderId, logId);
-                  if (!excluded) {
-                    weeklyData[weekKey][senderId].items += qty;
-                  }
-                  totalAdded += qty;
-                }
-              });
-              if (totalAdded > 0) {
-                const excluded = isPaymentExcluded(senderId, logId);
-                paymentHistory[senderId].push({
-                  id: logId,
-                  timestamp: Number(log.timestamp) * 1000,
-                  weekKey,
-                  type: 'item',
-                  amount: totalAdded,
-                  medium: describeLogMedium(log),
-                  excluded
-                });
-              }
-            }
+            paymentHistory[senderId].push({
+              id: paymentId,
+              logId,
+              timestamp: Number(log.timestamp) * 1000,
+              weekKey,
+              type: 'item',
+              amount: itemQuantity,
+              medium: describeLogMedium(log),
+              excluded
+            });
+            continue;
           }
+
+          const moneyAmount = getMoneyAmountFromLog(log);
+          if (moneyAmount > 0 && isLikelyIncomingMoneyLog(log)) {
+            const paymentId = `money:${logId}`;
+            const excluded = isPaymentExcluded(senderId, paymentId);
+            if (!excluded) {
+              weeklyData[weekKey][senderId].money += moneyAmount;
+            }
+            paymentHistory[senderId].push({
+              id: paymentId,
+              logId,
+              timestamp: Number(log.timestamp) * 1000,
+              weekKey,
+              type: 'money',
+              amount: moneyAmount,
+              medium: describeLogMedium(log),
+              excluded
+            });
+          }
+        }
+
+        if (logResult.hitPageLimit) {
+          logScanHitPageLimit = true;
         }
       }
 
@@ -1425,23 +1410,248 @@
       }
       const employeeCount = Object.keys(employees).length;
       const mode = SETTINGS.testMode ? "test mode" : (SETTINGS.manualMode ? "manual mode" : "live API");
-      setStatus(`Loaded ${employeeCount} employee${employeeCount === 1 ? "" : "s"} (${mode}, profile: ${ACTIVE_PROFILE_ID})${forceRefresh ? " • refreshed" : ""}.`, "success");
+      if (logScanHitPageLimit) {
+        setStatus(`Loaded ${employeeCount} employee${employeeCount === 1 ? "" : "s"}, but hit the ${SETTINGS.maxLogPages}-page log scan limit before reaching the full rolling period. Raise Max Log Pages and refresh if older payments are missing.`, "error");
+      } else {
+        setStatus(`Loaded ${employeeCount} employee${employeeCount === 1 ? "" : "s"} (${mode}, profile: ${ACTIVE_PROFILE_ID})${forceRefresh ? " • refreshed" : ""}.`, "success");
+      }
     } catch (err) {
       console.error("Failed to fetch tax data", err);
       setStatus(`Failed to load data: ${err && err.message ? err.message : "Unknown error"}`, "error");
     }
   }
 
-  
+  async function tornFetch(endpoint, params) {
+    if (!SETTINGS.apiKey) {
+      throw new Error("No Torn API key saved. Open Settings and add an API key.");
+    }
+    const query = new URLSearchParams();
+    Object.entries(params || {}).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && String(value).trim() !== "") {
+        query.set(key, value);
+      }
+    });
+    query.set("key", SETTINGS.apiKey);
+
+    let lastError = null;
+    for (let attempt = 1; attempt <= 4; attempt += 1) {
+      try {
+        const res = await fetch(`https://api.torn.com/${endpoint}?${query.toString()}`);
+        const text = await res.text();
+        let data;
+        try {
+          data = JSON.parse(text);
+        } catch (jsonError) {
+          throw new Error(`Torn returned invalid JSON (HTTP ${res.status}). Response begins: ${text.slice(0, 180)}`);
+        }
+        if (data && data.error) {
+          const code = Number(data.error.code);
+          const message = String(data.error.error || "Unknown Torn API error");
+          if ([5, 8, 9, 12, 15, 17, 24].includes(code) && attempt < 4) {
+            await delay(retryDelayMs(attempt));
+            continue;
+          }
+          throw new Error(`Torn API error (${code}): ${message}`);
+        }
+        if (!res.ok) {
+          throw new Error(`Torn API HTTP error ${res.status}. Response begins: ${text.slice(0, 180)}`);
+        }
+        return data || {};
+      } catch (error) {
+        lastError = error;
+        if (attempt < 4 && isRetryableNetworkError(error)) {
+          await delay(retryDelayMs(attempt));
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw lastError || new Error("Torn API request failed.");
+  }
+
+  async function fetchAllLogs(logTypes, fromUnix, maxPages) {
+    const combined = {};
+    let toUnix = Math.floor(Date.now() / 1000);
+    let previousOldest = null;
+    let hitPageLimit = false;
+    const pageLimit = Math.min(100, Math.max(1, Number(maxPages) || DEFAULT_SETTINGS.maxLogPages));
+
+    for (let page = 0; page < pageLimit; page += 1) {
+      const params = {
+        selections: "log",
+        from: fromUnix,
+        to: toUnix
+      };
+      if (String(logTypes || "").trim()) {
+        params.log = String(logTypes).trim();
+      }
+
+      const response = await tornFetch("user/", params);
+      const logs = response.log || {};
+      const ids = Object.keys(logs);
+      if (!ids.length) {
+        break;
+      }
+
+      let oldest = null;
+      ids.forEach(id => {
+        combined[id] = logs[id];
+        const timestamp = Number((logs[id] || {}).timestamp || 0);
+        if (timestamp > 0 && (oldest === null || timestamp < oldest)) {
+          oldest = timestamp;
+        }
+      });
+
+      if (oldest === null || oldest <= fromUnix || oldest === previousOldest) {
+        break;
+      }
+      previousOldest = oldest;
+      toUnix = oldest - 1;
+
+      if (page === pageLimit - 1 && oldest > fromUnix) {
+        hitPageLimit = true;
+      }
+    }
+
+    return { logs: combined, hitPageLimit };
+  }
+
+  function determineLogStartUnix() {
+    const displayWeeks = generateRecentWeekKeys(SETTINGS.maxWeeks || ROLLING_WINDOW_WEEKS);
+    const earliestDisplayedWeek = displayWeeks[0] || getIsoWeekKey(new Date());
+    const requiredStart = rollingWindowStartWeekFor(formatWeekKey(SETTINGS.startYear, SETTINGS.startWeek), earliestDisplayedWeek, ROLLING_WINDOW_WEEKS);
+    return Math.floor(isoWeekStartDate(requiredStart).getTime() / 1000);
+  }
+
+  function generateRecentWeekKeys(count) {
+    const keys = [];
+    const currentStart = isoWeekStartDate(getIsoWeekKey(new Date()));
+    const safeCount = Math.min(52, Math.max(1, Number(count) || ROLLING_WINDOW_WEEKS));
+    for (let i = safeCount - 1; i >= 0; i -= 1) {
+      keys.push(getIsoWeekKey(new Date(currentStart.getTime() - i * MILLIS_PER_WEEK)));
+    }
+    return keys;
+  }
+
+  function rollingWindowStartWeekFor(trackFromWeek, weekKey, windowWeeks) {
+    const weekStart = isoWeekStartDate(weekKey);
+    const windowStart = getIsoWeekKey(new Date(
+      weekStart.getTime() - Math.max(Number(windowWeeks) - 1, 0) * MILLIS_PER_WEEK
+    ));
+    return compareWeekKeys(trackFromWeek, windowStart) >= 0 ? trackFromWeek : windowStart;
+  }
+
+  function getIsoWeekKey(date) {
+    const source = new Date(date);
+    const d = new Date(Date.UTC(source.getUTCFullYear(), source.getUTCMonth(), source.getUTCDate() + 1));
+    const dayNumber = d.getUTCDay() || 7;
+    d.setUTCDate(d.getUTCDate() + 4 - dayNumber);
+    const year = d.getUTCFullYear();
+    const yearStart = new Date(Date.UTC(year, 0, 1));
+    const week = Math.ceil((((d - yearStart) / MILLIS_PER_DAY) + 1) / 7);
+    return formatWeekKey(year, week);
+  }
+
+  function isoWeekStartDate(weekKey) {
+    const parsed = parseWeekKey(weekKey);
+    if (!parsed) {
+      throw new Error(`Invalid tax week key: ${weekKey}`);
+    }
+    const [year, week] = parsed;
+    const januaryFourth = new Date(Date.UTC(year, 0, 4));
+    const day = januaryFourth.getUTCDay() || 7;
+    const weekOneMonday = new Date(januaryFourth.getTime());
+    weekOneMonday.setUTCDate(januaryFourth.getUTCDate() - day + 1);
+    return new Date(weekOneMonday.getTime() + (week - 1) * MILLIS_PER_WEEK - MILLIS_PER_DAY);
+  }
+
+  function weeksInclusive(startWeekKey, endWeekKey) {
+    const start = isoWeekStartDate(startWeekKey).getTime();
+    const end = isoWeekStartDate(endWeekKey).getTime();
+    if (end < start) {
+      return 0;
+    }
+    return Math.floor((end - start) / MILLIS_PER_WEEK) + 1;
+  }
+
+  function unixLogDate(log) {
+    const timestamp = Number(log && log.timestamp || 0);
+    if (!Number.isFinite(timestamp) || timestamp <= 0) {
+      return null;
+    }
+    const date = new Date(timestamp * 1000);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  function retryDelayMs(attempt) {
+    return Math.min(8000, 500 * Math.pow(2, attempt - 1)) + Math.floor(Math.random() * 250);
+  }
+
+  function isRetryableNetworkError(error) {
+    const message = String(error && error.message || error).toLowerCase();
+    return message.includes("timed out") ||
+      message.includes("failed to fetch") ||
+      message.includes("network") ||
+      message.includes("http error 429") ||
+      message.includes("http error 5");
+  }
+
+  function parsePositiveAmount(value) {
+    if (typeof value === "number") {
+      return Number.isFinite(value) && value > 0 ? value : 0;
+    }
+    const text = String(value || "").trim();
+    if (!text) {
+      return 0;
+    }
+    const cleaned = text.replace(/[$£,\s]/g, "");
+    if (!/^\d+(\.\d+)?$/.test(cleaned)) {
+      return 0;
+    }
+    const number = Number(cleaned);
+    return Number.isFinite(number) && number > 0 ? number : 0;
+  }
+
+  function isLikelyIncomingMoneyLog(log) {
+    const data = log && log.data ? log.data : {};
+    const searchable = [
+      log && log.title, log && log.log, log && log.category,
+      data.action, data.type, data.message, data.text, data.title, data.description
+    ].filter(value => value !== undefined && value !== null)
+      .join(" ")
+      .toLowerCase();
+
+    if (/\b(sent|gave|paid out|withdrew|withdrawn|removed)\b/.test(searchable) &&
+        !/\b(received|given to you|deposited|added)\b/.test(searchable)) {
+      return false;
+    }
+    if (/\b(received|given|deposit|deposited|transfer|transferred|money|cash|company funds?)\b/.test(searchable)) {
+      return true;
+    }
+    return hasOwnPositiveMoneyField(data);
+  }
+
+  function hasOwnPositiveMoneyField(data) {
+    const keys = ["money", "amount", "cash", "money_received", "received", "value"];
+    for (let i = 0; i < keys.length; i += 1) {
+      if (!Object.prototype.hasOwnProperty.call(data || {}, keys[i])) {
+        continue;
+      }
+      const value = parsePositiveAmount(data[keys[i]]);
+      if (Number.isFinite(value) && value > 0) {
+        return true;
+      }
+    }
+    return false;
+  }
 
   function getWeekNumber(d) {
-    const target = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
-    const dayNumber = target.getUTCDay() || 7; // ISO week starts on Monday (1) and ends on Sunday (7)
-    target.setUTCDate(target.getUTCDate() + 4 - dayNumber); // Shift to Thursday of this week to determine ISO year
-    const isoYear = target.getUTCFullYear();
-    const yearStart = new Date(Date.UTC(isoYear, 0, 1));
-    const weekNo = Math.ceil((((target - yearStart) / 86400000) + 1) / 7);
-    return [isoYear, weekNo];
+    const parsed = parseWeekKey(getIsoWeekKey(d));
+    return parsed || [d.getUTCFullYear(), 1];
   }
 
   function getRelativeWeekFromCurrent(offsetWeeks) {
@@ -1472,16 +1682,11 @@
   }
 
   function getDateFromWeekKey(weekKey) {
-    const parsed = parseWeekKey(weekKey);
-    if (!parsed) {
+    try {
+      return isoWeekStartDate(weekKey);
+    } catch (error) {
       return null;
     }
-    const [year, week] = parsed;
-    const simple = new Date(Date.UTC(year, 0, 4));
-    const dayOfWeek = simple.getUTCDay() || 7;
-    simple.setUTCDate(simple.getUTCDate() - dayOfWeek + 1);
-    simple.setUTCDate(simple.getUTCDate() + (week - 1) * 7);
-    return simple;
   }
 
   function formatWeekHeader(weekKey) {
@@ -1659,9 +1864,8 @@
   }
   function renderOverview(weeklyData, COMPANY_MEMBERS) {
     if (!overviewView) return;
-    const weekKeys = generateWeekKeys(SETTINGS.startYear, SETTINGS.startWeek);
-    const displayWeeks = weekKeys.slice(-SETTINGS.maxWeeks);
-    const allWeeks = weekKeys;
+    const displayWeeks = generateRecentWeekKeys(SETTINGS.maxWeeks || ROLLING_WINDOW_WEEKS);
+    const allWeeks = generateWeekKeys(SETTINGS.startYear, SETTINGS.startWeek);
 
     if (displayWeeks.length === 0) {
       overviewView.innerHTML = '<p style="color:#ccc;">No weeks available for the selected start week.</p>';
@@ -1694,7 +1898,7 @@
     const firstVisibleWeekInfo = formatWeekHeader(firstVisibleWeek);
     const lastVisibleWeekInfo = formatWeekHeader(lastVisibleWeek);
     let periodHtml = '<div style="margin-bottom:10px;padding:8px 10px;background:#222;border:1px solid #3a3a3a;border-radius:6px;color:#ddd;font-size:12px;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;">';
-    periodHtml += `<span><strong>Showing:</strong> ${displayWeeks.length} week${displayWeeks.length === 1 ? '' : 's'}</span>`;
+    periodHtml += `<span><strong>Showing:</strong> ${displayWeeks.length} week${displayWeeks.length === 1 ? '' : 's'} with a ${ROLLING_WINDOW_WEEKS}-week rolling tax window</span>`;
     periodHtml += `<span><strong>Range:</strong> ${firstVisibleWeekInfo.fullLabel} (${firstVisibleWeekInfo.startLabel}) → ${lastVisibleWeekInfo.fullLabel} (${lastVisibleWeekInfo.startLabel})</span>`;
     periodHtml += '</div>';
 
@@ -1715,11 +1919,12 @@
         <div style="font-size:11px;color:#9fd3ff;line-height:1.2;">${weekInfo.startLabel}</div>
       </th>`;
     });
-    html += '<th style="padding:8px;border:1px solid #444;position:sticky;right:140px;background:#2a2a2a;z-index:2;">Total Paid</th>';
+    html += '<th style="padding:8px;border:1px solid #444;position:sticky;right:140px;background:#2a2a2a;z-index:2;">Rolling Paid</th>';
     html += '<th style="padding:8px;border:1px solid #444;position:sticky;right:0;background:#2a2a2a;z-index:2;">Balance</th></tr></thead><tbody>';
 
     employeeIds.forEach((id, idx) => {
       const req = getMemberRequirement(id);
+      const taxReqs = getMemberTaxRequirements(id);
       const type = req.type === 'item' ? 'item' : 'money';
       const employeeRecord = COMPANY_MEMBERS[id];
       const employeeName = getEmployeeName(employeeRecord) || 'Unknown';
@@ -1805,6 +2010,28 @@
         weekKey,
         paid: paidByWeek[weekKey] || 0
       }));
+      const currentDisplayWeek = displayWeeks[displayWeeks.length - 1];
+      const trackFromKey = countedWeeksSorted[0] || startKey;
+      const rollingWindowStart = rollingWindowStartWeekFor(trackFromKey, currentDisplayWeek, ROLLING_WINDOW_WEEKS);
+      const rollingWeekCount = countedWeeksSorted.filter(weekKey => {
+        return compareWeekKeys(weekKey, rollingWindowStart) >= 0 && compareWeekKeys(weekKey, currentDisplayWeek) <= 0;
+      }).length;
+      const rollingTotals = countedWeeksSorted.reduce((totals, weekKey) => {
+        if (compareWeekKeys(weekKey, rollingWindowStart) < 0 || compareWeekKeys(weekKey, currentDisplayWeek) > 0) {
+          return totals;
+        }
+        const data = (weeklyData[weekKey] && weeklyData[weekKey][id]) || { money: 0, items: 0 };
+        totals.money += Number(data.money) || 0;
+        totals.items += Number(data.items) || 0;
+        return totals;
+      }, { money: 0, items: 0 });
+      const rollingCashDue = rollingWeekCount * taxReqs.cash;
+      const rollingItemDue = rollingWeekCount * taxReqs.items;
+      const rollingCashEquivalentPaid = rollingTotals.money + (rollingTotals.items / taxReqs.items) * taxReqs.cash;
+      const rollingItemEquivalentPaid = rollingTotals.items + (rollingTotals.money / taxReqs.cash) * taxReqs.items;
+      const rollingCashNeeded = Math.max(0, rollingCashDue - rollingCashEquivalentPaid);
+      const rollingItemNeeded = Math.max(0, rollingItemDue - rollingItemEquivalentPaid);
+      const rollingOverpaidWeeks = Math.max(0, (rollingCashEquivalentPaid - rollingCashDue) / taxReqs.cash);
 
       const allowRollover = SETTINGS.allowPrepaymentRollover !== false;
       const totalPaid = countedWeekEntries.reduce((sum, entry) => sum + entry.paid, 0);
@@ -1971,31 +2198,28 @@
         html += `<td class="tax-week-cell" data-employee="${id}" data-week="${week}" data-effective="${isEffective}" data-counted="${isCounted}" data-carry-target="${carryTargetAttr || ''}" data-carry-active="${carryActiveAttr}" style="background:${cellColor};color:${cellText};border:1px solid #444;cursor:${cursor};" title="${title}">${symbol}</td>`;
       });
 
-      const expected = countedWeeks.length * req.amount;
-      const baseBalance = totalPaid - expected;
-      const balance = allowRollover ? baseBalance : (shortfallTotal > 0 ? -shortfallTotal : baseBalance);
-      const totalLabel = type === 'money' ? `$${totalPaid.toLocaleString()}` : `${totalPaid} ${SETTINGS.taxItemName}`;
+      const expected = type === 'money' ? rollingCashDue : rollingItemDue;
+      const balance = type === 'money'
+        ? rollingCashEquivalentPaid - rollingCashDue
+        : rollingItemEquivalentPaid - rollingItemDue;
+      const totalLabel = `$${Math.round(rollingTotals.money).toLocaleString()} / ${Math.round(rollingTotals.items).toLocaleString()} ${SETTINGS.taxItemName}`;
       html += `<td style="color:#66ff66;padding:6px;border:1px solid #444;position:sticky;right:140px;background:${rowBg};">${totalLabel}</td>`;
 
-      if (type === 'money') {
-        grandMoneyPaid += totalPaid;
-        grandMoneyExpected += expected;
-        grandMoneyBalance += balance;
-      } else {
-        grandItemPaid += totalPaid;
-        grandItemExpected += expected;
-        grandItemBalance += balance;
-      }
+      grandMoneyPaid += rollingTotals.money;
+      grandMoneyExpected += rollingCashDue;
+      grandMoneyBalance += rollingCashEquivalentPaid - rollingCashDue;
+      grandItemPaid += rollingTotals.items;
+      grandItemExpected += rollingItemDue;
+      grandItemBalance += rollingItemEquivalentPaid - rollingItemDue;
 
-      if (balance < 0) {
-        const owe = type === 'money' ? `$${Math.abs(balance).toLocaleString()}` : `${Math.abs(balance)} ${SETTINGS.taxItemName}`;
-        html += `<td data-balance-state="owing" style="color:#ff6666;padding:6px;border:1px solid #444;position:sticky;right:0;background:${rowBg};">Owes ${owe}</td>`;
+      if (rollingCashNeeded > 0 || rollingItemNeeded > 0) {
+        const owe = `$${Math.ceil(rollingCashNeeded).toLocaleString()} OR ${Math.ceil(rollingItemNeeded).toLocaleString()} ${SETTINGS.taxItemName}`;
+        html += `<td data-balance-state="owing" title="Rolling window ${rollingWindowStart} to ${currentDisplayWeek}; ${rollingWeekCount} due week${rollingWeekCount === 1 ? '' : 's'}." style="color:#ff6666;padding:6px;border:1px solid #444;position:sticky;right:0;background:${rowBg};">Owes ${owe}</td>`;
         owingList.push({ id, name: employeeName, amount: owe });
-      } else if (balance > 0) {
-        const over = type === 'money' ? `$${balance.toLocaleString()}` : `${balance} ${SETTINGS.taxItemName}`;
-        html += `<td data-balance-state="overpaid" style="color:#66ccff;padding:6px;border:1px solid #444;position:sticky;right:0;background:${rowBg};">Overpaid ${over}</td>`;
+      } else if (rollingOverpaidWeeks > 0) {
+        html += `<td data-balance-state="overpaid" title="Rolling window ${rollingWindowStart} to ${currentDisplayWeek}." style="color:#66ccff;padding:6px;border:1px solid #444;position:sticky;right:0;background:${rowBg};">Overpaid ${rollingOverpaidWeeks.toFixed(2)} week${rollingOverpaidWeeks === 1 ? '' : 's'}</td>`;
       } else {
-        html += `<td data-balance-state="on-track" style="color:#66ff66;padding:6px;border:1px solid #444;position:sticky;right:0;background:${rowBg};">On Track</td>`;
+        html += `<td data-balance-state="on-track" title="Rolling window ${rollingWindowStart} to ${currentDisplayWeek}." style="color:#66ff66;padding:6px;border:1px solid #444;position:sticky;right:0;background:${rowBg};">On Track</td>`;
       }
 
       html += '</tr>';
@@ -2695,17 +2919,49 @@
   }
 
   function getMoneyAmountFromLog(log) {
-    const fields = ['data.money', 'data.amount', 'data.total'];
+    const fields = [
+      'data.money', 'data.amount', 'data.cash', 'data.money_received',
+      'data.received', 'data.transferred', 'data.transfer_amount',
+      'data.deposit', 'data.deposited'
+    ];
     for (const path of fields) {
       const value = safe(log, path);
       if (value !== undefined) {
-        const num = Number(value);
-        if (Number.isFinite(num)) {
+        const num = parsePositiveAmount(value);
+        if (Number.isFinite(num) && num > 0) {
           return num;
         }
       }
     }
-    return 0;
+    return findPositiveNumberByKeys(log && log.data, fields.map(field => field.replace(/^data\./, '')));
+  }
+
+  function findPositiveNumberByKeys(object, acceptedKeys) {
+    let found = 0;
+    const accepted = new Set(acceptedKeys.map(key => String(key).toLowerCase()));
+
+    function walk(value) {
+      if (found > 0 || !value || typeof value !== 'object') {
+        return;
+      }
+      if (!Array.isArray(value)) {
+        Object.keys(value).some(key => {
+          if (!accepted.has(String(key).toLowerCase())) {
+            return false;
+          }
+          const number = parsePositiveAmount(value[key]);
+          if (Number.isFinite(number) && number > 0) {
+            found = number;
+            return true;
+          }
+          return false;
+        });
+      }
+      Object.keys(value).forEach(key => walk(value[key]));
+    }
+
+    walk(object);
+    return found;
   }
 
   function extractQuantity(value) {
@@ -2774,6 +3030,23 @@
           return;
         }
         visited.add(value);
+
+        if (normalizedTargetId !== undefined) {
+          Object.keys(value).forEach(key => {
+            if (normalizeItemId(key) !== normalizedTargetId) {
+              return;
+            }
+            const entry = value[key];
+            if (entry && typeof entry === 'object') {
+              const quantityFields = ['quantity', 'qty', 'amount', 'q', 'count', 'number', 'total', 'value'];
+              const quantity = quantityFields.map(field => extractQuantity(entry[field])).find(q => q !== undefined);
+              subtotal += quantity !== undefined && quantity > 0 ? quantity : 1;
+            } else {
+              const quantity = extractQuantity(entry);
+              subtotal += quantity !== undefined && quantity > 0 ? quantity : 1;
+            }
+          });
+        }
 
         const names = [
           value.name, value.item, value.itemname, value.itemName, value.title,
