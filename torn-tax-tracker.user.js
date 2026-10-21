@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      8.0.0-beta.12
+// @version      8.0.0-beta.13
 // @description  Cached staff payment tracking for an adjustable period, with cash/item payments checked against previous arrears before future credit.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -2070,6 +2070,18 @@
     dialog.setAttribute('aria-labelledby','tax-write-off-title');
     dialog.innerHTML = `<style>
       #tax-write-off, #tax-write-off label, #tax-write-off p, #tax-write-off h2, #tax-write-off h3 {color:#eef2f6 !important;font-family:system-ui !important;}
+      #tax-write-off {box-sizing:border-box;line-height:1.5 !important;}
+      #tax-write-off h2 {margin:0 0 18px !important;font-size:22px !important;line-height:1.3 !important;}
+      #tax-write-off #tax-write-off-person {margin:0 0 6px !important;font-weight:600;}
+      #tax-write-off p {margin:0 0 18px !important;line-height:1.5 !important;}
+      #tax-write-off label {display:block !important;clear:both !important;margin:0 0 16px !important;line-height:1.5 !important;}
+      #tax-write-off input, #tax-write-off select {display:block !important;width:100% !important;min-height:40px;margin:6px 0 0 !important;}
+      #tax-write-off #write-off-free-week {display:block !important;margin:0 0 18px !important;padding:8px 12px !important;}
+      #tax-write-off .write-off-actions {display:flex;gap:10px;flex-wrap:wrap;margin:4px 0 24px;}
+      #tax-write-off .write-off-saved {border-top:1px solid #46515d;padding-top:18px;}
+      #tax-write-off .write-off-saved h3 {margin:0 0 12px !important;font-size:16px !important;line-height:1.4 !important;}
+      #tax-write-off #write-off-list {font-size:13px;color:#b9c4cf;}
+      #tax-write-off #write-off-error:empty {display:none;}
       #tax-write-off input, #tax-write-off select {color:#fff !important;background:#141a21 !important;border:1px solid #718096 !important;border-radius:6px;box-sizing:border-box;font:14px system-ui;}
       #tax-write-off button {color:#fff !important;background:#303a46 !important;border:1px solid #718096 !important;border-radius:6px;font:13px system-ui;cursor:pointer;}
       #tax-write-off #write-off-save {background:#28784f !important;}
@@ -2081,9 +2093,9 @@
       <button type="button" id="write-off-free-week" style="margin:6px 0 14px;padding:8px;color:white;background:#303a46;border:1px solid #718096">Use one free week</button>
       <label>Note<input id="write-off-note" maxlength="200" placeholder="e.g. Free week agreed" style="display:block;box-sizing:border-box;width:100%;margin:6px 0 14px;padding:9px;background:#141a21;color:white;border:1px solid #718096"></label>
       <p id="write-off-error" role="alert" style="color:#ffb3b3"></p>
-      <button type="button" id="write-off-save" style="padding:9px 14px;background:#28784f;color:white;border:1px solid #419d70;border-radius:6px">Save write-off</button>
+      <div class="write-off-actions"><button type="button" id="write-off-save" style="padding:9px 14px;background:#28784f;color:white;border:1px solid #419d70;border-radius:6px">Save write-off</button>
       <button type="button" id="write-off-cancel" style="padding:9px 14px;background:#303a46;color:white;border:1px solid #718096;border-radius:6px">Close</button>
-      <h3 style="color:white">Saved adjustments</h3><div id="write-off-list"></div>`;
+      </div><section class="write-off-saved"><h3 style="color:white">Saved adjustments</h3><div id="write-off-list"></div></section>`;
     dialog.querySelector('#tax-write-off-person').textContent = name;
     const select = dialog.querySelector('#write-off-week');
     for (const week of ledger.weeks) { const option = document.createElement('option'); option.value=week.key; option.textContent=formatWeekHeader(week.key).fullStartLabel; select.append(option); }
