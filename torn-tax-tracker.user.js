@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      8.0.0-beta.4
+// @version      8.0.0-beta.5
 // @description  Simple eight-week staff payment checklist. Cash and items count together; older unpaid weeks remain recorded.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -1843,9 +1843,11 @@
 
   function renderOverview(weeklyData, employees) {
     if (!overviewView) return;
-    const visible = generateRecentWeekKeys(8);
-    const current = visible[visible.length - 1];
-    const start = isoWeekStartDate(formatWeekKey(SETTINGS.startYear, SETTINGS.startWeek));
+    const recentWeeks = generateRecentWeekKeys(8);
+    const current = recentWeeks[recentWeeks.length - 1];
+    const trackingStart = formatWeekKey(SETTINGS.startYear, SETTINGS.startWeek);
+    const visible = recentWeeks.filter(key => compareWeekKeys(key, trackingStart) >= 0);
+    const start = isoWeekStartDate(trackingStart);
     const end = isoWeekStartDate(current);
     const all = [];
     for (let day = start.getTime(); day <= end.getTime(); day += MILLIS_PER_WEEK) all.push(getIsoWeekKey(new Date(day)));
