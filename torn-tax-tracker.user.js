@@ -1,14 +1,15 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      7.21
-// @description  Track company tax from Torn logs with the same Sunday-start rolling window logic used by the Google Sheets tracker, plus profiles, reminders, overpayment tracking, totals row, and Test Mode.
+// @version      8.0.0-beta.1
+// @description  Simple eight-week staff payment checklist. Cash and items count together; older unpaid weeks remain recorded.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
 // @grant        none
 // @license      MIT
-// @downloadURL https://update.greasyfork.org/scripts/552053/Torn%20Lingerie%20Store%20Tax%20Tracker.user.js
-// @updateURL https://update.greasyfork.org/scripts/552053/Torn%20Lingerie%20Store%20Tax%20Tracker.meta.js
+// @downloadURL https://raw.githubusercontent.com/ShiftyFurball/Torncity-userscripts/codex/simple-eight-week-tracker/torn-tax-tracker.user.js
+// @updateURL https://raw.githubusercontent.com/ShiftyFurball/Torncity-userscripts/codex/simple-eight-week-tracker/torn-tax-tracker.user.js
+// @noframes
 // ==/UserScript==
 
 (function () {
@@ -20,7 +21,7 @@
   const DEFAULT_PROFILE_ID = "default";
   const ITEM_CATALOG_MAX_AGE = 24 * 60 * 60 * 1000; // 24 hours
   const DEFAULT_TAX_ITEM_ID = 206;
-  const ROLLING_WINDOW_WEEKS = 6;
+  const ROLLING_WINDOW_WEEKS = 8;
   const MILLIS_PER_DAY = 86400000;
   const MILLIS_PER_WEEK = 7 * MILLIS_PER_DAY;
 
@@ -137,7 +138,7 @@
     }
     if (typeof record === "object") {
       const name = typeof record.name === "string" ? record.name : "";
-      const joinDaysValue = Number(record.joinDays);
+      const joinDaysValue = record.joinDays == null ? NaN : Number(record.joinDays);
       const joinDateValue = Number(record.joinDate);
       return {
         name,
@@ -438,6 +439,8 @@
     sanitizeSettingsInPlace();
   }
 
+  let scanComplete = false;
+  let fetching = false;
   let lastEmployeesCache = {};
   let lastWeeklyDataCache = {};
   let lastPaymentHistoryCache = {};
@@ -911,6 +914,11 @@
   }
   panel.addEventListener("mousedown", () => bringToFront(panel));
 
+  for (const id of ['openOverview', 'openPayments', 'openEmployeeMenu', 'editEmployees']) {
+    panel.querySelector('#' + id).hidden = true;
+    panel.querySelector('#' + id).style.display = 'none';
+  }
+  panel.querySelector('#drag-bar span').textContent = 'Staff payments · 8 weeks';
   switchView("overview");
 
   function showApiPrompt() {
@@ -939,184 +947,40 @@
   }
 
   function showSettingsEditor() {
-    const editor = document.createElement("div");
-    Object.assign(editor.style, {
-      position: "fixed", top: "18%", left: "34%", width: "32%",
-      background: "#222", color: "#fff", padding: "15px", zIndex: String(LAYER_Z_INDEX.modal),
-      borderRadius: "8px", boxShadow: "0px 0px 10px rgba(0,0,0,0.7)"
-    });
-
-    editor.innerHTML = `
-      <div id="settingsDragHandle" style="cursor:move;font-weight:bold;margin:0 0 10px 0;user-select:none;">Settings</div>
-      <label style="display:block;">Company Profile ID:
-        <input id="setProfileId" type="text" value="${ACTIVE_PROFILE_ID}" list="profileList" style="width:100%;box-sizing:border-box;background:#111;color:#0f0;border:1px solid #555;margin-top:6px;">
-        <datalist id="profileList">
-          ${PROFILE_META.knownProfileIds.map(id => `<option value="${escapeHtml(id)}"></option>`).join("")}
-        </datalist>
-        <small style="color:#ccc;">Use separate profile IDs to keep independent tax history for different companies (example: <code>lingerie</code>, <code>oil-rig</code>).</small>
-      </label><br>
-      <label style="display:block;">API Key:
-        <input id="setApiKey" type="text" value="${SETTINGS.apiKey}" style="width:100%;box-sizing:border-box;background:#111;color:#0f0;border:1px solid #555;margin-top:6px;">
-      </label><br>
-      <label>Start Year:
-        <input id="setYear" type="number" value="${SETTINGS.startYear}" style="width:90px;background:#111;color:#0f0;border:1px solid #555;margin-left:8px;">
-      </label><br><br>
-      <label>Start Week:
-        <input id="setWeek" type="number" value="${SETTINGS.startWeek}" style="width:90px;background:#111;color:#0f0;border:1px solid #555;margin-left:8px;">
-      </label><br><br>
-      <div style="margin:10px 0;padding:10px;border:1px solid #333;border-radius:6px;background:#191919;">
-        <div style="margin-bottom:6px;font-weight:bold;color:#0f0;">Recollect recent data</div>
-        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-          <span>Show last</span>
-          <input id="recollectWeeks" type="number" value="${Math.min(SETTINGS.maxWeeks || 6, 6)}" style="width:70px;background:#111;color:#0f0;border:1px solid #555;padding:4px;">
-          <span>weeks</span>
-          <button id="applyRecollect" style="background:#2e8b57;color:white;border:none;padding:4px 10px;border-radius:4px;cursor:pointer;">Recollect</button>
-        </div>
-        <small style="color:#ccc;display:block;margin-top:6px;">Updates the start week to the most recent weeks and refreshes the tracker immediately.</small>
-      </div>
-      <label>Max Weeks to Display:
-        <input id="setMaxWeeks" type="number" value="${SETTINGS.maxWeeks}" style="width:90px;background:#111;color:#0f0;border:1px solid #555;margin-left:8px;">
-      </label><br><br>
-      <label>Max Log Pages:
-        <input id="setMaxLogPages" type="number" value="${SETTINGS.maxLogPages}" style="width:90px;background:#111;color:#0f0;border:1px solid #555;margin-left:8px;">
-      </label>
-      <small style="color:#ccc;display:block;margin:4px 0 12px 0;">Raise this if the refresh says the scan hit the page limit before the rolling period was complete.</small>
-      <label>Payment due day:
-        <select id="setDueWeekday" style="width:140px;background:#111;color:#0f0;border:1px solid #555;margin-left:8px;">
-          ${WEEKDAY_NAMES.map((day, idx) => `<option value="${idx}" ${Number(SETTINGS.paymentDueWeekday) === idx ? "selected" : ""}>${day}</option>`).join("")}
-        </select>
-      </label><br><br>
-      <label><input id="manualMode" type="checkbox" ${SETTINGS.manualMode ? "checked" : ""}> Manual Employees Mode</label><br><br>
-      <label><input id="testMode" type="checkbox" ${SETTINGS.testMode ? "checked" : ""}> Enable Test Mode (fake data)</label><br><br>
-      <label><input id="enableEmployeeMenu" type="checkbox" ${SETTINGS.enableEmployeeMenu ? "checked" : ""}> Enable Employees Menu</label><br><br>
-      <label><input id="allowRollover" type="checkbox" ${SETTINGS.allowPrepaymentRollover !== false ? "checked" : ""}> Allow prepayments to auto-cover future weeks</label>
-
-      <fieldset style="border:1px solid #444;border-radius:6px;padding:10px;margin-top:12px;">
-        <legend style="padding:0 6px;color:#0f0;">Defaults for New Employees</legend>
-        <label>Default Requirement Type:
-          <select id="setDefaultRequirementType" style="width:160px;background:#111;color:#0f0;border:1px solid #555;margin-left:8px;">
-            <option value="money" ${SETTINGS.defaultRequirementType === "item" ? "" : "selected"}>Money</option>
-            <option value="item" ${SETTINGS.defaultRequirementType === "item" ? "selected" : ""}>${SETTINGS.taxItemName}</option>
-          </select>
-        </label><br><br>
-        <label>Default Money Tax:
-          <input id="setDefaultMoney" type="number" value="${SETTINGS.defaultMoneyTax}" style="width:140px;background:#111;color:#0f0;border:1px solid #555;margin-left:8px;">
-        </label><br><br>
-        <label>Item Name:
-          <input id="setItemName" type="text" value="${SETTINGS.taxItemName}" style="width:140px;background:#111;color:#0f0;border:1px solid #555;margin-left:8px;">
-        </label><br><br>
-        <label>Default Item Tax:
-          <input id="setDefaultItem" type="number" value="${SETTINGS.defaultItemTax}" style="width:140px;background:#111;color:#0f0;border:1px solid #555;margin-left:8px;">
-        </label>
-      </fieldset>
-
-      <label style="display:block;margin-top:12px;">Reminder Message:
-        <textarea id="setReminder" style="width:100%;height:80px;background:#111;color:#0f0;border:1px solid #555;margin-top:6px;">${SETTINGS.reminderMessage}</textarea>
-        <small style="color:#ccc;">Use placeholders: {name}, {id}, {amount}</small>
-      </label>
-
-      <div style="text-align:right;margin-top:12px;">
-        <button id="saveSet" style="background:#2e8b57;color:white;padding:6px 12px;border:none;border-radius:4px;cursor:pointer;">Save</button>
-        <button id="cancelSet" style="background:#555;color:white;padding:6px 12px;border:none;border-radius:4px;cursor:pointer;">Cancel</button>
-      </div>
-    `;
-    document.body.appendChild(editor);
-    bringToFront(editor);
-    const settingsDragHandle = editor.querySelector("#settingsDragHandle");
-    if (settingsDragHandle) {
-      makeDraggable(editor, settingsDragHandle);
-    }
-    const defaultTypeSelect = editor.querySelector("#setDefaultRequirementType");
-    const itemNameInput = editor.querySelector("#setItemName");
-    if (defaultTypeSelect && itemNameInput) {
-      const updateItemLabel = () => {
-        const option = defaultTypeSelect.querySelector('option[value="item"]');
-        if (option) {
-          const name = itemNameInput.value.trim() || DEFAULT_SETTINGS.taxItemName;
-          option.textContent = name;
-        }
-      };
-      updateItemLabel();
-      itemNameInput.addEventListener("input", updateItemLabel);
-    }
-    const recollectInput = editor.querySelector("#recollectWeeks");
-    const recollectButton = editor.querySelector("#applyRecollect");
-    if (recollectButton && recollectInput) {
-      recollectButton.addEventListener("click", () => {
-        let weeks = parseInt(recollectInput.value, 10);
-        if (!Number.isFinite(weeks) || weeks < 1) {
-          weeks = 4;
-        } else if (weeks > 52) {
-          weeks = 52;
-        }
-        const offset = -(weeks - 1);
-        const { year, week } = getRelativeWeekFromCurrent(offset);
-        SETTINGS.startYear = year;
-        SETTINGS.startWeek = week;
-        saveSettings(SETTINGS);
-        const yearInput = editor.querySelector("#setYear");
-        const weekInput = editor.querySelector("#setWeek");
-        if (yearInput) {
-          yearInput.value = SETTINGS.startYear;
-        }
-        if (weekInput) {
-          weekInput.value = SETTINGS.startWeek;
-        }
-        fetchData();
-      });
-    }
-    editor.querySelector("#cancelSet").addEventListener("click", () => editor.remove());
-    editor.querySelector("#saveSet").addEventListener("click", () => {
-      const requestedProfileId = sanitizeProfileId((editor.querySelector("#setProfileId").value || ACTIVE_PROFILE_ID));
-      const isProfileChange = requestedProfileId !== ACTIVE_PROFILE_ID;
-      if (isProfileChange) {
-        switchToProfile(requestedProfileId);
-      }
-      const previousDefaults = getDefaultRequirement();
-      SETTINGS.startYear = parseInt(editor.querySelector("#setYear").value, 10);
-      SETTINGS.startWeek = parseInt(editor.querySelector("#setWeek").value, 10);
-      SETTINGS.maxWeeks = parseInt(editor.querySelector("#setMaxWeeks").value, 10);
-      SETTINGS.maxLogPages = parseInt(editor.querySelector("#setMaxLogPages").value, 10);
-      SETTINGS.manualMode = editor.querySelector("#manualMode").checked;
-      SETTINGS.testMode = editor.querySelector("#testMode").checked;
-      SETTINGS.enableEmployeeMenu = editor.querySelector("#enableEmployeeMenu").checked;
-      SETTINGS.allowPrepaymentRollover = editor.querySelector("#allowRollover").checked;
-      const apiInput = editor.querySelector("#setApiKey");
-      SETTINGS.apiKey = apiInput ? apiInput.value.trim() : SETTINGS.apiKey;
-      const typeSelect = editor.querySelector("#setDefaultRequirementType");
-      SETTINGS.defaultRequirementType = typeSelect && typeSelect.value === "item" ? "item" : "money";
-      SETTINGS.paymentDueWeekday = parseInt(editor.querySelector("#setDueWeekday").value, 10);
-      SETTINGS.defaultMoneyTax = parseInt(editor.querySelector("#setDefaultMoney").value, 10) || DEFAULT_SETTINGS.defaultMoneyTax;
-      SETTINGS.taxItemName = (editor.querySelector("#setItemName").value || DEFAULT_SETTINGS.taxItemName).trim();
-      SETTINGS.defaultItemTax = parseInt(editor.querySelector("#setDefaultItem").value, 10) || DEFAULT_SETTINGS.defaultItemTax;
-      SETTINGS.reminderMessage = editor.querySelector("#setReminder").value.trim() || DEFAULT_SETTINGS.reminderMessage;
-      SETTINGS.requiredTax = SETTINGS.defaultMoneyTax;
-      sanitizeSettingsInPlace();
-      const defaults = getDefaultRequirement();
-      if (previousDefaults.type !== defaults.type || previousDefaults.amount !== defaults.amount) {
-        SETTINGS.defaultRequirementReset = getCurrentWeekKey();
-      }
-      Object.keys(SETTINGS.memberRequirements).forEach(id => {
-        const req = SETTINGS.memberRequirements[id];
-        if (req && req.useDefault) {
-          req.type = defaults.type;
-          req.amount = defaults.amount;
-        }
-      });
-      saveSettings(SETTINGS);
-      editor.remove();
-      panel.querySelector("#editEmployees").style.display = SETTINGS.manualMode ? "inline-block" : "none";
-      if (employeeButton) {
-        employeeButton.style.display = SETTINGS.enableEmployeeMenu ? "inline-block" : "none";
-      }
-      if (!SETTINGS.enableEmployeeMenu && currentView === "employees") {
-        switchView("overview");
-      }
-      fetchData();
-      if (isProfileChange) {
-        setStatus(`Switched to profile "${requestedProfileId}" and saved settings.`, "success");
-      }
-    });
+    if (document.getElementById('simple-tax-settings')) return;
+    const editor = document.createElement('div'); editor.id = 'simple-tax-settings';
+    editor.style.cssText = `position:fixed;inset:10% max(12px,20%);overflow:auto;background:#222;color:white;padding:20px;border:1px solid #777;border-radius:8px;z-index:${LAYER_Z_INDEX.modal};font:14px system-ui`;
+    editor.innerHTML = `<h2>Payment settings</h2><p>Sunday–Saturday (UTC). Cash and items count together.</p>
+      <label>API key <input id="simple-key" type="password" autocomplete="off"></label><br><br>
+      <label>Cash per week <input id="simple-cash" type="number" min="1" required></label><br><br>
+      <label>Items per week <input id="simple-items" type="number" min="1" required></label><br><br>
+      <label>Item name <input id="simple-item" required></label><br><br>
+      <details><summary>History and backup</summary><p>Changing rates recalculates the tracked period. Old settings are preserved, but per-member overrides and carrybacks are not used in this simplified view.</p>
+      <label>Track from year <input id="simple-year" type="number" min="2000" max="2100"></label><br><br>
+      <label>Track from week <input id="simple-week" type="number" min="1" max="53"></label><br><br>
+      <label>History scan limit (pages) <input id="simple-pages" type="number" min="1" max="100"></label><br><br>
+      <button id="simple-backup">Download settings backup</button><p>The backup excludes your API key.</p></details><p id="simple-settings-error" role="alert"></p>
+      <button id="simple-save">Save and refresh</button> <button id="simple-cancel">Cancel</button>`;
+    const fields = {key: SETTINGS.apiKey, cash: SETTINGS.defaultMoneyTax, items: SETTINGS.defaultItemTax, item: SETTINGS.taxItemName, year: SETTINGS.startYear, week: SETTINGS.startWeek, pages: SETTINGS.maxLogPages};
+    for (const [id, value] of Object.entries(fields)) editor.querySelector('#simple-' + id).value = value;
+    editor.querySelector('#simple-cancel').onclick = () => editor.remove();
+    editor.querySelector('#simple-backup').onclick = () => {
+      const copy = JSON.parse(JSON.stringify(SETTINGS)); delete copy.apiKey;
+      const url = URL.createObjectURL(new Blob([JSON.stringify({profile: ACTIVE_PROFILE_ID, settings: copy}, null, 2)], {type:'application/json'}));
+      const a = document.createElement('a'); a.href = url; a.download = 'torn-tax-settings-backup.json'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+    };
+    editor.querySelector('#simple-save').onclick = () => {
+      const error = editor.querySelector('#simple-settings-error');
+      if (fetching) { error.textContent = 'Wait for the current refresh to finish before changing settings.'; return; }
+      for (const input of editor.querySelectorAll('input')) if (!input.checkValidity()) { input.reportValidity(); return; }
+      const value = id => editor.querySelector('#simple-' + id).value.trim();
+      if (!value('key') || !value('item')) { error.textContent = 'Enter an API key and item name.'; return; }
+      SETTINGS.apiKey = value('key'); SETTINGS.defaultMoneyTax = Number(value('cash')); SETTINGS.defaultItemTax = Number(value('items')); SETTINGS.taxItemName = value('item');
+      SETTINGS.startYear = Number(value('year')); SETTINGS.startWeek = Number(value('week')); SETTINGS.maxLogPages = Number(value('pages'));
+      SETTINGS.testMode = false;
+      saveSettings(SETTINGS); editor.remove(); fetchData(true);
+    };
+    document.body.append(editor);
   }
 
   function showEmployeeEditor() {
@@ -1214,7 +1078,10 @@
   }
 
   async function fetchData(forceRefresh = false) {
-    setStatus("Fetching latest tax data...", "info");
+    if (fetching) return;
+    fetching = true;
+    scanComplete = false;
+    setStatus("Fetching payment history…", "info");
     let employees = {};
     let weeklyData = {};
     let paymentHistory = {};
@@ -1241,47 +1108,13 @@
             if (!info) {
               return;
             }
-            const joinDaysValue = Number(info.days_in_company);
+            const joinDaysValue = info.days_in_company == null ? NaN : Number(info.days_in_company);
             const joinDateValue = Number(info.join_date);
             employees[id] = {
               name: typeof info.name === "string" ? info.name : "",
               joinDays: Number.isFinite(joinDaysValue) ? joinDaysValue : null,
               joinDate: Number.isFinite(joinDateValue) && joinDateValue > 0 ? joinDateValue : null
             };
-          });
-        }
-
-        Object.keys(SETTINGS.memberRequirements).forEach(id => {
-          if (!employees[id]) {
-            delete SETTINGS.memberRequirements[id];
-          }
-        });
-        if (SETTINGS.memberRequirementResets) {
-          Object.keys(SETTINGS.memberRequirementResets).forEach(id => {
-            if (!employees[id]) {
-              delete SETTINGS.memberRequirementResets[id];
-            }
-          });
-        }
-        if (SETTINGS.memberWeekExclusions) {
-          Object.keys(SETTINGS.memberWeekExclusions).forEach(id => {
-            if (!employees[id]) {
-              delete SETTINGS.memberWeekExclusions[id];
-            }
-          });
-        }
-        if (SETTINGS.memberWeekCarrybacks) {
-          Object.keys(SETTINGS.memberWeekCarrybacks).forEach(id => {
-            if (!employees[id]) {
-              delete SETTINGS.memberWeekCarrybacks[id];
-            }
-          });
-        }
-        if (SETTINGS.excludedPayments) {
-          Object.keys(SETTINGS.excludedPayments).forEach(id => {
-            if (!employees[id]) {
-              delete SETTINGS.excludedPayments[id];
-            }
           });
         }
 
@@ -1299,7 +1132,7 @@
 
         const itemCatalog = await ensureItemCatalog();
         const configuredItemName = (SETTINGS.taxItemName || DEFAULT_SETTINGS.taxItemName).trim();
-        const configuredItemId = getItemIdForName(configuredItemName) || DEFAULT_TAX_ITEM_ID;
+        const configuredItemId = getItemIdForName(configuredItemName) || (normalizeItemName(configuredItemName) === 'xanax' ? DEFAULT_TAX_ITEM_ID : undefined);
         const configuredItemDisplayName = configuredItemId === 206
           ? configuredItemName
           : ((itemCatalog.byId && itemCatalog.byId[configuredItemId] && itemCatalog.byId[configuredItemId].name) || configuredItemName);
@@ -1334,7 +1167,7 @@
           }
 
           const itemQuantity = getItemQuantityFromLog(log, configuredItemDisplayName, configuredItemId);
-          if (itemQuantity > 0) {
+          if (itemQuantity > 0 && isLikelyIncomingMoneyLog(log)) {
             const paymentId = `item:${logId}`;
             const excluded = isPaymentExcluded(senderId, paymentId);
             if (!excluded) {
@@ -1378,7 +1211,8 @@
         }
       }
 
-      syncExcludedPaymentsWithWeeklyData(paymentHistory, weeklyData);
+      if (SETTINGS.testMode) syncExcludedPaymentsWithWeeklyData(paymentHistory, weeklyData);
+      scanComplete = !logScanHitPageLimit;
 
       lastEmployeesCache = employees;
       lastWeeklyDataCache = weeklyData;
@@ -1397,7 +1231,6 @@
       lastPaymentHistoryCache = paymentHistory;
       saveSettings(SETTINGS);
 
-      renderPaymentHistory(paymentHistory, employees);
       renderOverview(weeklyData, employees);
       if (SETTINGS.enableEmployeeMenu) {
         renderEmployeeMenu(employees);
@@ -1411,14 +1244,16 @@
       const employeeCount = Object.keys(employees).length;
       const mode = SETTINGS.testMode ? "test mode" : (SETTINGS.manualMode ? "manual mode" : "live API");
       if (logScanHitPageLimit) {
-        setStatus(`Loaded ${employeeCount} employee${employeeCount === 1 ? "" : "s"}, but hit the ${SETTINGS.maxLogPages}-page log scan limit before reaching the full rolling period. Raise Max Log Pages and refresh if older payments are missing.`, "error");
+        setStatus(`Payment history is incomplete. Increase the history scan limit in Settings and refresh. Unpaid balances cannot be confirmed.`, "error");
       } else {
         setStatus(`Loaded ${employeeCount} employee${employeeCount === 1 ? "" : "s"} (${mode}, profile: ${ACTIVE_PROFILE_ID})${forceRefresh ? " • refreshed" : ""}.`, "success");
       }
     } catch (err) {
+      scanComplete = false;
+      renderOverview(lastWeeklyDataCache, lastEmployeesCache);
       console.error("Failed to fetch tax data", err);
       setStatus(`Failed to load data: ${err && err.message ? err.message : "Unknown error"}`, "error");
-    }
+    } finally { fetching = false; }
   }
 
   async function tornFetch(endpoint, params) {
@@ -1487,7 +1322,10 @@
       }
 
       const response = await tornFetch("user/", params);
-      const logs = response.log || {};
+      if (!response.log || typeof response.log !== 'object') {
+        throw new Error('Torn returned no log collection. Check API log access.');
+      }
+      const logs = response.log;
       const ids = Object.keys(logs);
       if (!ids.length) {
         break;
@@ -1502,11 +1340,17 @@
         }
       });
 
-      if (oldest === null || oldest <= fromUnix || oldest === previousOldest) {
+      if (oldest === null || oldest === previousOldest) {
+        hitPageLimit = true;
+        break;
+      }
+      if (oldest <= fromUnix) {
         break;
       }
       previousOldest = oldest;
-      toUnix = oldest - 1;
+      // Overlap the boundary second and deduplicate by log ID to avoid losing
+      // payments that share a timestamp. A stalled boundary stays unconfirmed.
+      toUnix = oldest;
 
       if (page === pageLimit - 1 && oldest > fromUnix) {
         hitPageLimit = true;
@@ -1517,10 +1361,7 @@
   }
 
   function determineLogStartUnix() {
-    const displayWeeks = generateRecentWeekKeys(SETTINGS.maxWeeks || ROLLING_WINDOW_WEEKS);
-    const earliestDisplayedWeek = displayWeeks[0] || getIsoWeekKey(new Date());
-    const requiredStart = rollingWindowStartWeekFor(formatWeekKey(SETTINGS.startYear, SETTINGS.startWeek), earliestDisplayedWeek, ROLLING_WINDOW_WEEKS);
-    return Math.floor(isoWeekStartDate(requiredStart).getTime() / 1000);
+    return Math.floor(isoWeekStartDate(formatWeekKey(SETTINGS.startYear, SETTINGS.startWeek)).getTime() / 1000);
   }
 
   function generateRecentWeekKeys(count) {
@@ -1620,19 +1461,18 @@
     const data = log && log.data ? log.data : {};
     const searchable = [
       log && log.title, log && log.log, log && log.category,
-      data.action, data.type, data.message, data.text, data.title, data.description
+      data.action, data.type
     ].filter(value => value !== undefined && value !== null)
       .join(" ")
       .toLowerCase();
 
-    if (/\b(sent|gave|paid out|withdrew|withdrawn|removed)\b/.test(searchable) &&
-        !/\b(received|given to you|deposited|added)\b/.test(searchable)) {
+    if (/\b(send|sent|give|gave|paid out|withdrew|withdrawn|removed|buy|bought|use|used|sell|sold)\b/.test(searchable)) {
       return false;
     }
-    if (/\b(received|given|deposit|deposited|transfer|transferred|money|cash|company funds?)\b/.test(searchable)) {
+    if (/\b(receive|received|incoming|given to you|deposit|deposited)\b/.test(searchable)) {
       return true;
     }
-    return hasOwnPositiveMoneyField(data);
+    return false;
   }
 
   function hasOwnPositiveMoneyField(data) {
@@ -1862,486 +1702,76 @@
     saveSettings(SETTINGS);
     return { employees, weeklyData };
   }
-  function renderOverview(weeklyData, COMPANY_MEMBERS) {
+  // Pure calculation shared by the grid and balance. Payments cover oldest debt first.
+  function calculatePaymentLedger(weeks, entries, cashRate, itemRate, complete) {
+    const result = weeks.map(key => ({ key, coverage: 0 }));
+    const valid = entries.filter(p => !p.excluded && Number.isFinite(p.amount) && p.amount > 0 && weeks.includes(p.weekKey));
+    const available = valid.reduce((sum, p) => sum + p.amount / (p.type === 'money' ? cashRate : itemRate), 0);
+    let remaining = available;
+    for (const week of result) {
+      week.coverage = Math.min(1, Math.max(0, remaining));
+      week.status = week.coverage >= 1 - 1e-9 ? 'Paid' : !complete ? 'Unable to confirm' : week.coverage > 1e-9 ? 'Part paid' : 'Unpaid';
+      remaining = Math.max(0, remaining - 1);
+    }
+    return { weeks: result, owedWeeks: Math.max(0, weeks.length - available), creditWeeks: Math.max(0, available - weeks.length) };
+  }
+
+  function renderOverview(weeklyData, employees) {
     if (!overviewView) return;
-    const displayWeeks = generateRecentWeekKeys(SETTINGS.maxWeeks || ROLLING_WINDOW_WEEKS);
-    const allWeeks = generateWeekKeys(SETTINGS.startYear, SETTINGS.startWeek);
-
-    if (displayWeeks.length === 0) {
-      overviewView.innerHTML = '<p style="color:#ccc;">No weeks available for the selected start week.</p>';
-      return;
+    const visible = generateRecentWeekKeys(8);
+    const current = visible[visible.length - 1];
+    const start = isoWeekStartDate(formatWeekKey(SETTINGS.startYear, SETTINGS.startWeek));
+    const end = isoWeekStartDate(current);
+    const all = [];
+    for (let day = start.getTime(); day <= end.getTime(); day += MILLIS_PER_WEEK) all.push(getIsoWeekKey(new Date(day)));
+    const cash = Number(SETTINGS.defaultMoneyTax) || 10000000;
+    const items = Number(SETTINGS.defaultItemTax) || 7;
+    overviewView.innerHTML = `<p>Each week: $${cash.toLocaleString()} or ${items} ${escapeHtml(SETTINGS.taxItemName)} — cash and items can be combined.</p>
+      <p>Sunday–Saturday, UTC. Payments cover oldest unpaid weeks first. Older debt stays recorded from ${escapeHtml(formatWeekHeader(formatWeekKey(SETTINGS.startYear, SETTINGS.startWeek)).fullStartLabel)}. Click a week to see payments received.</p>
+      <label><input type="checkbox" id="simple-unpaid"> Show staff with outstanding payments only</label>
+      ${scanComplete ? '' : '<p role="alert">History is incomplete or unavailable. Outstanding balances cannot be confirmed. Increase the history scan limit in Settings and refresh.</p>'}
+      <div style="overflow:auto;margin-top:12px"><table id="simple-grid" style="width:100%;border-collapse:collapse;white-space:nowrap"><thead></thead><tbody></tbody></table></div><div id="simple-details" style="margin-top:16px"></div>`;
+    const table = overviewView.querySelector('table');
+    const header = table.querySelector('thead').insertRow();
+    for (const label of ['Employee', ...visible.map(k => formatWeekHeader(k).startLabel), 'Outstanding / credit', 'Last payment (UTC)']) {
+      const th = document.createElement('th'); th.textContent = label; th.style.cssText = 'padding:10px;border-bottom:1px solid #555;text-align:left'; header.append(th);
     }
-
-    const employeeIds = Object.keys(COMPANY_MEMBERS).sort((a, b) => {
-      const nameA = getEmployeeName(COMPANY_MEMBERS[a] || {}).toLowerCase();
-      const nameB = getEmployeeName(COMPANY_MEMBERS[b] || {}).toLowerCase();
-      if (nameA === nameB) {
-        return a.localeCompare(b);
+    for (const id of Object.keys(employees).sort((a, b) => getEmployeeName(employees[a]).localeCompare(getEmployeeName(employees[b])))) {
+      const joined = getEmployeeJoinWeek(employees[id]) || getEmployeeJoinWeekFromDays(employees[id]);
+      const joinKey = joined ? formatWeekKey(...joined) : null;
+      const weeks = all.filter(k => !joinKey || compareWeekKeys(k, joinKey) >= 0);
+      const history = lastPaymentHistoryCache[id] || [];
+      const ledger = calculatePaymentLedger(weeks, history, cash, items, scanComplete);
+      const row = table.querySelector('tbody').insertRow();
+      row.dataset.owing = String(!scanComplete || ledger.owedWeeks > 1e-9);
+      const cell = text => { const td = row.insertCell(); td.textContent = text; td.style.cssText = 'padding:10px;border-bottom:1px solid #444'; return td; };
+      cell(getEmployeeName(employees[id]) || id);
+      for (const key of visible) {
+        const week = ledger.weeks.find(w => w.key === key);
+        let label = week ? week.status : '—';
+        if (key === current && scanComplete && week && week.status !== 'Paid') label = week.coverage > 0 ? 'Part paid · due' : 'Due this week';
+        const td = cell(''); const btn = document.createElement('button'); btn.textContent = label;
+        btn.style.cssText = `color:${label === 'Paid' ? '#91e5ae' : label === 'Unpaid' ? '#ffb3b3' : '#e5dfad'};background:#292929;border:1px solid #555;border-radius:5px;padding:7px;cursor:pointer`;
+        btn.addEventListener('click', () => showSimplePayments(id, key, employees)); td.append(btn);
       }
-      return nameA.localeCompare(nameB);
+      cell(!scanComplete ? 'Unable to confirm' : ledger.creditWeeks > 1e-9 ? `${ledger.creditWeeks.toFixed(2)} weeks credit` : ledger.owedWeeks <= 1e-9 ? 'Paid up' : `$${Math.round(ledger.owedWeeks * cash).toLocaleString()} or ${(ledger.owedWeeks * items).toFixed(2)} ${SETTINGS.taxItemName} (includes this week)`);
+      const last = history.filter(p => !p.excluded).sort((a, b) => b.timestamp - a.timestamp)[0];
+      cell(last ? new Date(last.timestamp).toISOString().slice(0, 16).replace('T', ' ') : scanComplete ? 'None' : 'Unknown');
+    }
+    overviewView.querySelector('#simple-unpaid').addEventListener('change', event => {
+      for (const row of table.querySelectorAll('tbody tr')) row.hidden = event.target.checked && row.dataset.owing === 'false';
     });
-    if (employeeIds.length === 0) {
-      overviewView.innerHTML = '<p style="color:#ccc;">No employees loaded yet. Fetch data to view tax progress.</p>';
-      return;
+  }
+
+  function showSimplePayments(id, key, employees) {
+    const detail = overviewView.querySelector('#simple-details'); detail.replaceChildren();
+    const heading = document.createElement('h3'); heading.textContent = `${getEmployeeName(employees[id])} · received week of ${formatWeekHeader(key).startLabel}`; detail.append(heading);
+    const explanation = document.createElement('p'); explanation.textContent = 'These are actual receipts for this week. The grid allocates payments to oldest unpaid weeks first.'; detail.append(explanation);
+    const entries = (lastPaymentHistoryCache[id] || []).filter(p => p.weekKey === key);
+    if (!entries.length) { const p = document.createElement('p'); p.textContent = scanComplete ? 'No payments received this week.' : 'No payments found in the history scanned so far.'; detail.append(p); }
+    for (const entry of entries) {
+      const p = document.createElement('p'); p.textContent = `${new Date(entry.timestamp).toISOString().slice(0, 16).replace('T', ' ')} UTC — ${entry.type === 'money' ? '$' + entry.amount.toLocaleString() : entry.amount + ' ' + SETTINGS.taxItemName}${entry.excluded ? ' (previously excluded)' : ''}`; detail.append(p);
     }
-
-    let grandMoneyPaid = 0;
-    let grandMoneyExpected = 0;
-    let grandMoneyBalance = 0;
-    let grandItemPaid = 0;
-    let grandItemExpected = 0;
-    let grandItemBalance = 0;
-    const owingList = [];
-
-    const firstVisibleWeek = displayWeeks[0];
-    const lastVisibleWeek = displayWeeks[displayWeeks.length - 1];
-    const firstVisibleWeekInfo = formatWeekHeader(firstVisibleWeek);
-    const lastVisibleWeekInfo = formatWeekHeader(lastVisibleWeek);
-    let periodHtml = '<div style="margin-bottom:10px;padding:8px 10px;background:#222;border:1px solid #3a3a3a;border-radius:6px;color:#ddd;font-size:12px;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;">';
-    periodHtml += `<span><strong>Showing:</strong> ${displayWeeks.length} week${displayWeeks.length === 1 ? '' : 's'} with a ${ROLLING_WINDOW_WEEKS}-week rolling tax window</span>`;
-    periodHtml += `<span><strong>Range:</strong> ${firstVisibleWeekInfo.fullLabel} (${firstVisibleWeekInfo.startLabel}) → ${lastVisibleWeekInfo.fullLabel} (${lastVisibleWeekInfo.startLabel})</span>`;
-    periodHtml += '</div>';
-
-    let controlsHtml = '<div style="margin:10px 0;padding:8px 10px;background:#222;border:1px solid #3a3a3a;border-radius:6px;color:#ddd;font-size:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">';
-    controlsHtml += '<label style="display:flex;align-items:center;gap:6px;"><span>Filter:</span><input id="overviewEmployeeFilter" type="text" placeholder="Name or ID" style="background:#111;color:#0f0;border:1px solid #555;padding:4px 6px;border-radius:4px;min-width:180px;"></label>';
-    controlsHtml += '<label style="display:flex;align-items:center;gap:6px;"><input id="overviewOwingOnly" type="checkbox">Owing only</label>';
-    controlsHtml += '<span id="overviewVisibleCount" style="color:#9fd3ff;margin-left:auto;"></span>';
-    controlsHtml += '</div>';
-
-    let html = '<div style="overflow:auto;"><table style="width:100%; border-collapse: collapse; text-align:center; font-size:12px; background:#1b1b1b; color:#ccc;">';
-    html += '<thead><tr style="background:#2a2a2a; color:#fff; font-weight:bold;">';
-    html += '<th style="padding:8px;border:1px solid #444;text-align:left;position:sticky;left:0;background:#2a2a2a;z-index:2;">Employee</th>';
-    displayWeeks.forEach(week => {
-      const weekInfo = formatWeekHeader(week);
-      const weekTitle = `${weekInfo.fullLabel} • Starts ${weekInfo.fullStartLabel || weekInfo.startLabel} (UTC)`;
-      html += `<th style="padding:6px;border:1px solid #444;min-width:88px;" title="${weekTitle}">
-        <div style="font-weight:bold;color:#fff;line-height:1.2;">${weekInfo.shortLabel}</div>
-        <div style="font-size:11px;color:#9fd3ff;line-height:1.2;">${weekInfo.startLabel}</div>
-      </th>`;
-    });
-    html += '<th style="padding:8px;border:1px solid #444;position:sticky;right:140px;background:#2a2a2a;z-index:2;">Rolling Paid</th>';
-    html += '<th style="padding:8px;border:1px solid #444;position:sticky;right:0;background:#2a2a2a;z-index:2;">Balance</th></tr></thead><tbody>';
-
-    employeeIds.forEach((id, idx) => {
-      const req = getMemberRequirement(id);
-      const taxReqs = getMemberTaxRequirements(id);
-      const type = req.type === 'item' ? 'item' : 'money';
-      const employeeRecord = COMPANY_MEMBERS[id];
-      const employeeName = getEmployeeName(employeeRecord) || 'Unknown';
-      const rowBg = (idx % 2 === 0) ? '#202020' : '#262626';
-      const joinWeek = getEmployeeJoinWeekFromDays(employeeRecord) || getEmployeeJoinWeek(employeeRecord);
-      const joinWeekKey = joinWeek ? formatWeekKey(joinWeek[0], joinWeek[1]) : null;
-      const requirementStart = getRequirementStartWeek(id, req);
-      const startKey = `${SETTINGS.startYear}-W${SETTINGS.startWeek}`;
-      const weekRequirementReasons = {};
-      const effectiveWeeks = [];
-
-      allWeeks.forEach(weekKey => {
-        const reasons = [];
-        if (joinWeekKey && compareWeekKeys(weekKey, joinWeekKey) < 0) {
-          reasons.push(`Employee joined ${joinWeekKey}`);
-        }
-        if (!isWeekOnOrAfter(weekKey, startKey)) {
-          reasons.push(`Before start week ${startKey}`);
-        }
-        if (requirementStart && !isWeekOnOrAfter(weekKey, requirementStart)) {
-          reasons.push(`Requirement begins ${requirementStart}`);
-        }
-        weekRequirementReasons[weekKey] = reasons;
-        if (reasons.length === 0) {
-          effectiveWeeks.push(weekKey);
-        }
-      });
-
-      const effectiveWeekSet = new Set(effectiveWeeks);
-      const exclusions = new Set(
-        getExcludedWeeksForMember(id).filter(weekKey => effectiveWeekSet.has(weekKey))
-      );
-
-      const countedWeeks = effectiveWeeks.filter(weekKey => !exclusions.has(weekKey));
-      const countedWeeksSet = new Set(countedWeeks);
-      const countedWeeksSorted = countedWeeks.slice().sort(compareWeekKeys);
-      const previousCountedWeek = {};
-      countedWeeksSorted.forEach((weekKey, index) => {
-        previousCountedWeek[weekKey] = index > 0 ? countedWeeksSorted[index - 1] : null;
-      });
-
-      const rawPaidByWeek = {};
-      countedWeeksSorted.forEach(weekKey => {
-        const data = (weeklyData[weekKey] && weeklyData[weekKey][id]) || { money: 0, items: 0 };
-        rawPaidByWeek[weekKey] = type === 'money' ? data.money : data.items;
-      });
-
-      const carrybacksRaw = getWeekCarrybacksForMember(id);
-      const validCarrybacks = {};
-      let carrybacksChanged = false;
-      Object.keys(carrybacksRaw).forEach(weekKey => {
-        const targetWeek = carrybacksRaw[weekKey];
-        if (countedWeeksSet.has(weekKey) && countedWeeksSet.has(targetWeek) && compareWeekKeys(targetWeek, weekKey) < 0) {
-          validCarrybacks[weekKey] = targetWeek;
-        } else {
-          carrybacksChanged = true;
-        }
-      });
-      if (carrybacksChanged) {
-        setWeekCarrybacksForMember(id, validCarrybacks);
-        saveSettings(SETTINGS);
-      }
-
-      const paidByWeek = Object.assign({}, rawPaidByWeek);
-      const carrybackSources = {};
-      Object.keys(validCarrybacks).forEach(sourceWeek => {
-        const targetWeek = validCarrybacks[sourceWeek];
-        if (!targetWeek) {
-          return;
-        }
-        const amount = paidByWeek[sourceWeek] || 0;
-        if (amount > 0) {
-          if (!carrybackSources[targetWeek]) {
-            carrybackSources[targetWeek] = [];
-          }
-          carrybackSources[targetWeek].push({ source: sourceWeek, amount });
-        }
-        paidByWeek[targetWeek] = (paidByWeek[targetWeek] || 0) + (paidByWeek[sourceWeek] || 0);
-        paidByWeek[sourceWeek] = 0;
-      });
-
-      const countedWeekEntries = countedWeeksSorted.map(weekKey => ({
-        weekKey,
-        paid: paidByWeek[weekKey] || 0
-      }));
-      const currentDisplayWeek = displayWeeks[displayWeeks.length - 1];
-      const trackFromKey = countedWeeksSorted[0] || startKey;
-      const rollingWindowStart = rollingWindowStartWeekFor(trackFromKey, currentDisplayWeek, ROLLING_WINDOW_WEEKS);
-      const rollingWeekCount = countedWeeksSorted.filter(weekKey => {
-        return compareWeekKeys(weekKey, rollingWindowStart) >= 0 && compareWeekKeys(weekKey, currentDisplayWeek) <= 0;
-      }).length;
-      const rollingTotals = countedWeeksSorted.reduce((totals, weekKey) => {
-        if (compareWeekKeys(weekKey, rollingWindowStart) < 0 || compareWeekKeys(weekKey, currentDisplayWeek) > 0) {
-          return totals;
-        }
-        const data = (weeklyData[weekKey] && weeklyData[weekKey][id]) || { money: 0, items: 0 };
-        totals.money += Number(data.money) || 0;
-        totals.items += Number(data.items) || 0;
-        return totals;
-      }, { money: 0, items: 0 });
-      const rollingCashDue = rollingWeekCount * taxReqs.cash;
-      const rollingItemDue = rollingWeekCount * taxReqs.items;
-      const rollingCashEquivalentPaid = rollingTotals.money + (rollingTotals.items / taxReqs.items) * taxReqs.cash;
-      const rollingItemEquivalentPaid = rollingTotals.items + (rollingTotals.money / taxReqs.cash) * taxReqs.items;
-      const rollingCashNeeded = Math.max(0, rollingCashDue - rollingCashEquivalentPaid);
-      const rollingItemNeeded = Math.max(0, rollingItemDue - rollingItemEquivalentPaid);
-      const rollingOverpaidWeeks = Math.max(0, (rollingCashEquivalentPaid - rollingCashDue) / taxReqs.cash);
-
-      const allowRollover = SETTINGS.allowPrepaymentRollover !== false;
-      const totalPaid = countedWeekEntries.reduce((sum, entry) => sum + entry.paid, 0);
-      const shortfallTotal = allowRollover ? 0 : countedWeekEntries.reduce((sum, entry) => {
-        return sum + Math.max(req.amount - entry.paid, 0);
-      }, 0);
-      const weekCoverageStatus = {};
-      if (req.amount <= 0) {
-        countedWeekEntries.forEach(entry => {
-          weekCoverageStatus[entry.weekKey] = true;
-        });
-      } else if (countedWeekEntries.length > 0) {
-        if (allowRollover) {
-          const prefixTotals = [];
-          let runningTotal = 0;
-          countedWeekEntries.forEach((entry, index) => {
-            runningTotal += entry.paid;
-            prefixTotals[index] = runningTotal;
-          });
-          const coverageCounts = prefixTotals.map(total => Math.floor(total / req.amount));
-          const maxCoverageFromIndex = new Array(coverageCounts.length);
-          let runningMax = 0;
-          for (let i = coverageCounts.length - 1; i >= 0; i--) {
-            runningMax = Math.max(runningMax, coverageCounts[i]);
-            maxCoverageFromIndex[i] = runningMax;
-          }
-          countedWeekEntries.forEach((entry, index) => {
-            weekCoverageStatus[entry.weekKey] = maxCoverageFromIndex[index] >= (index + 1);
-          });
-        } else {
-          countedWeekEntries.forEach(entry => {
-            weekCoverageStatus[entry.weekKey] = entry.paid >= req.amount;
-          });
-        }
-      }
-
-      html += `<tr class="tax-overview-row" data-employee-id="${escapeHtml(String(id))}" data-employee-name="${escapeHtml(employeeName.toLowerCase())}" style="background:${rowBg};">`;
-      html += `<td style="padding:6px;border:1px solid #444;text-align:left;color:#fff;position:sticky;left:0;background:${rowBg};">${employeeName} [${id}]</td>`;
-
-      displayWeeks.forEach(week => {
-        const data = (weeklyData[week] && weeklyData[week][id]) || { money: 0, items: 0 };
-        const rawPaid = type === 'money' ? data.money : data.items;
-        const countedPaid = paidByWeek[week] || 0;
-        const carrybackTarget = validCarrybacks[week] || null;
-        const carrybackSourcesHere = carrybackSources[week] || [];
-        const isEffective = effectiveWeekSet.has(week);
-        const isExcluded = exclusions.has(week);
-        const isCounted = countedWeeksSet.has(week);
-        let cellColor = '#222222';
-        let cellText = '#888888';
-        let symbol = '—';
-        const paidLabel = type === 'money' ? `$${countedPaid.toLocaleString()}` : `${countedPaid} ${SETTINGS.taxItemName}`;
-        const rawPaidLabel = type === 'money' ? `$${rawPaid.toLocaleString()}` : `${rawPaid} ${SETTINGS.taxItemName}`;
-        const reqLabel = type === 'money' ? `$${req.amount.toLocaleString()}` : `${req.amount} ${SETTINGS.taxItemName}`;
-        const rawMoney = Number(data.money) || 0;
-        const rawItems = Number(data.items) || 0;
-        const paymentMode = rawMoney > 0 && rawItems > 0 ? 'mixed' : rawMoney > 0 ? 'money' : rawItems > 0 ? 'item' : 'none';
-        const mediumParts = [];
-        if (rawMoney > 0) {
-          mediumParts.push(`Money: $${rawMoney.toLocaleString()}`);
-        }
-        if (rawItems > 0) {
-          mediumParts.push(`${SETTINGS.taxItemName}: ${rawItems}`);
-        }
-        const mediumSuffix = mediumParts.length ? ` Received this week — ${mediumParts.join('; ')}.` : '';
-        let mediumDetailsAdded = false;
-        let title = `Paid ${paidLabel} / Required ${reqLabel}`;
-        if (!isEffective) {
-          if (mediumParts.length > 0) {
-            cellColor = '#113311';
-            cellText = '#66ff66';
-            symbol = '✅';
-            const reasons = weekRequirementReasons[week] || [];
-            const reasonText = reasons.length ? ` (${reasons.join('; ')})` : '';
-            const paymentSummary = mediumParts.join('; ');
-            title = `No requirement for this week${reasonText}. Received ${paymentSummary}.`;
-            mediumDetailsAdded = true;
-          } else {
-            const reasons = weekRequirementReasons[week] || [];
-            const reasonText = reasons.length ? ` (${reasons.join('; ')})` : '';
-            title = `No requirement for this week${reasonText}.`;
-          }
-        } else if (isExcluded) {
-          cellColor = '#333333';
-          cellText = '#cccccc';
-          symbol = '⏸';
-          title = `Week excluded from requirement. Paid ${rawPaidLabel}. Click to include.`;
-        } else {
-          let met;
-          if (req.amount <= 0) {
-            met = true;
-          } else if (isCounted && Object.prototype.hasOwnProperty.call(weekCoverageStatus, week)) {
-            met = weekCoverageStatus[week];
-          } else {
-            met = countedPaid >= req.amount;
-          }
-          if (met) {
-            symbol = '✅';
-            if (paymentMode === 'item') {
-              cellColor = '#002244';
-              cellText = '#66ccff';
-            } else if (paymentMode === 'mixed') {
-              cellColor = '#2b1f44';
-              cellText = '#d1b3ff';
-            } else if (paymentMode === 'money') {
-              cellColor = '#003300';
-              cellText = '#66ff66';
-            } else {
-              cellColor = '#2f2f00';
-              cellText = '#ffef66';
-            }
-            if (allowRollover && countedPaid < req.amount) {
-              title = `Paid ${paidLabel} / Required ${reqLabel}. Requirement covered by cumulative payments. Click to exclude.`;
-            } else if (!allowRollover && countedPaid > req.amount) {
-              title = `Paid ${paidLabel} / Required ${reqLabel}. Extra paid will not auto-cover future weeks. Click to exclude.`;
-            } else {
-              title = `Paid ${paidLabel} / Required ${reqLabel}. Click to exclude.`;
-            }
-          } else {
-            symbol = '❌';
-            if (paymentMode === 'item' && type === 'money') {
-              cellColor = '#331133';
-              cellText = '#ff99ff';
-              title = `Paid ${paidLabel} / Required ${reqLabel}. Money is required for this week. Click to exclude.`;
-            } else if (paymentMode === 'money' && type === 'item') {
-              cellColor = '#003344';
-              cellText = '#66ccff';
-              title = `Paid ${paidLabel} / Required ${reqLabel}. ${SETTINGS.taxItemName} is required for this week. Click to exclude.`;
-            } else if (paymentMode === 'mixed') {
-              cellColor = '#33220d';
-              cellText = '#ffcc88';
-              title = `Paid ${paidLabel} / Required ${reqLabel}. Partial payment received. Click to exclude.`;
-            } else {
-              cellColor = '#3a0000';
-              cellText = '#ff6666';
-              title = `Paid ${paidLabel} / Required ${reqLabel}. Click to exclude.`;
-            }
-          }
-        }
-        if (!mediumDetailsAdded && mediumSuffix) {
-          title += mediumSuffix;
-          mediumDetailsAdded = true;
-        }
-        if (carrybackTarget) {
-          symbol = '↩️';
-          cellColor = '#2d1f00';
-          cellText = '#ffcc66';
-          const baseMessage = countedPaid > 0 ? `Counted ${paidLabel}` : 'No counted payment';
-          title = `${baseMessage}. Carried ${rawPaidLabel} back to ${carrybackTarget}. Alt+click to restore this week.`;
-          mediumDetailsAdded = false;
-        } else if (carrybackSourcesHere.length > 0) {
-          const parts = carrybackSourcesHere
-            .sort((a, b) => compareWeekKeys(a.source, b.source))
-            .map(entry => `${entry.source} (${type === 'money' ? `$${entry.amount.toLocaleString()}` : `${entry.amount} ${SETTINGS.taxItemName}`})`);
-          title += `. Includes carryback from ${parts.join(', ')}.`;
-        }
-        if (!mediumDetailsAdded && mediumSuffix) {
-          title += mediumSuffix;
-          mediumDetailsAdded = true;
-        }
-        const cursor = isEffective ? 'pointer' : 'default';
-        const carryTargetAttr = carrybackTarget || (isCounted ? (previousCountedWeek[week] || '') : '');
-        const carryActiveAttr = carrybackTarget ? 'true' : 'false';
-        html += `<td class="tax-week-cell" data-employee="${id}" data-week="${week}" data-effective="${isEffective}" data-counted="${isCounted}" data-carry-target="${carryTargetAttr || ''}" data-carry-active="${carryActiveAttr}" style="background:${cellColor};color:${cellText};border:1px solid #444;cursor:${cursor};" title="${title}">${symbol}</td>`;
-      });
-
-      const expected = type === 'money' ? rollingCashDue : rollingItemDue;
-      const balance = type === 'money'
-        ? rollingCashEquivalentPaid - rollingCashDue
-        : rollingItemEquivalentPaid - rollingItemDue;
-      const totalLabel = `$${Math.round(rollingTotals.money).toLocaleString()} / ${Math.round(rollingTotals.items).toLocaleString()} ${SETTINGS.taxItemName}`;
-      html += `<td style="color:#66ff66;padding:6px;border:1px solid #444;position:sticky;right:140px;background:${rowBg};">${totalLabel}</td>`;
-
-      grandMoneyPaid += rollingTotals.money;
-      grandMoneyExpected += rollingCashDue;
-      grandMoneyBalance += rollingCashEquivalentPaid - rollingCashDue;
-      grandItemPaid += rollingTotals.items;
-      grandItemExpected += rollingItemDue;
-      grandItemBalance += rollingItemEquivalentPaid - rollingItemDue;
-
-      if (rollingCashNeeded > 0 || rollingItemNeeded > 0) {
-        const owe = `$${Math.ceil(rollingCashNeeded).toLocaleString()} OR ${Math.ceil(rollingItemNeeded).toLocaleString()} ${SETTINGS.taxItemName}`;
-        html += `<td data-balance-state="owing" title="Rolling window ${rollingWindowStart} to ${currentDisplayWeek}; ${rollingWeekCount} due week${rollingWeekCount === 1 ? '' : 's'}." style="color:#ff6666;padding:6px;border:1px solid #444;position:sticky;right:0;background:${rowBg};">Owes ${owe}</td>`;
-        owingList.push({ id, name: employeeName, amount: owe });
-      } else if (rollingOverpaidWeeks > 0) {
-        html += `<td data-balance-state="overpaid" title="Rolling window ${rollingWindowStart} to ${currentDisplayWeek}." style="color:#66ccff;padding:6px;border:1px solid #444;position:sticky;right:0;background:${rowBg};">Overpaid ${rollingOverpaidWeeks.toFixed(2)} week${rollingOverpaidWeeks === 1 ? '' : 's'}</td>`;
-      } else {
-        html += `<td data-balance-state="on-track" title="Rolling window ${rollingWindowStart} to ${currentDisplayWeek}." style="color:#66ff66;padding:6px;border:1px solid #444;position:sticky;right:0;background:${rowBg};">On Track</td>`;
-      }
-
-      html += '</tr>';
-    });
-
-    html += '</tbody></table></div>';
-
-    const tipHtml = '<div style="margin-top:8px;color:#ccc;font-size:11px;line-height:1.5;">Click a week cell to exclude/include it for that employee. Alt+click to carry a payment back to the previous counted week.<br><strong>Legend:</strong> ✅ covered, ❌ short, ⏸ excluded, ↩️ carried back. Week headers show <em>week number</em> and the <em>start date (UTC)</em>.</div>';
-
-    let summaryHtml = '<div style="margin-top:12px;padding:10px;background:#222;border:1px solid #444;border-radius:6px;">';
-    summaryHtml += '<strong style="color:#fff;">Summary</strong><br>';
-    if (grandMoneyExpected > 0) {
-      const balance = grandMoneyBalance;
-      const balanceLabel = balance > 0 ? `Overpaid $${balance.toLocaleString()}` : balance < 0 ? `Owes $${Math.abs(balance).toLocaleString()}` : 'On Track';
-      summaryHtml += `<span style="color:#ccc;">Money: Paid $${grandMoneyPaid.toLocaleString()} / Expected $${grandMoneyExpected.toLocaleString()} (${balanceLabel})</span><br>`;
-    }
-    if (grandItemExpected > 0) {
-      const balance = grandItemBalance;
-      const balanceLabel = balance > 0 ? `Overpaid ${balance} ${SETTINGS.taxItemName}` : balance < 0 ? `Owes ${Math.abs(balance)} ${SETTINGS.taxItemName}` : 'On Track';
-      summaryHtml += `<span style="color:#ccc;">Items: Paid ${grandItemPaid} ${SETTINGS.taxItemName} / Expected ${grandItemExpected} ${SETTINGS.taxItemName} (${balanceLabel})</span><br>`;
-    }
-    summaryHtml += '</div>';
-
-    let reminderHtml = '<div style="margin-top:12px;padding:10px;background:#222;border:1px solid #444;border-radius:6px;">';
-    reminderHtml += '<h4 style="color:#fff;margin:0 0 10px 0;">Employees Owing Tax</h4>';
-    if (owingList.length === 0) {
-      reminderHtml += '<p style="color:lightgreen;">All employees are fully paid up ✅</p>';
-    } else {
-      reminderHtml += '<ul style="list-style:none;padding:0;margin:0;">';
-      owingList.forEach(emp => {
-        const reminderText = SETTINGS.reminderMessage
-          .replace(/\{name\}/g, emp.name)
-          .replace(/\{id\}/g, emp.id)
-          .replace(/\{amount\}/g, emp.amount);
-        reminderHtml += `<li style="margin:6px 0;color:#ff6666;">${emp.name} [${emp.id}] owes ${emp.amount}
-          <a href="#" data-id="${emp.id}" data-msg="${encodeURIComponent(reminderText)}" class="tax-reminder-link" style="color:#66ccff;margin-left:10px;">Copy Reminder</a></li>`;
-      });
-      reminderHtml += '</ul>';
-    }
-    reminderHtml += '</div>';
-
-    overviewView.innerHTML = periodHtml + controlsHtml + tipHtml + html + summaryHtml + reminderHtml;
-
-    const filterInput = overviewView.querySelector("#overviewEmployeeFilter");
-    const owingOnlyCheckbox = overviewView.querySelector("#overviewOwingOnly");
-    const visibleCountLabel = overviewView.querySelector("#overviewVisibleCount");
-    const applyOverviewFilter = () => {
-      const rows = Array.from(overviewView.querySelectorAll(".tax-overview-row"));
-      const term = (filterInput && filterInput.value ? filterInput.value : "").trim().toLowerCase();
-      const showOwingOnly = !!(owingOnlyCheckbox && owingOnlyCheckbox.checked);
-      let visibleCount = 0;
-      rows.forEach(row => {
-        const employeeName = row.getAttribute("data-employee-name") || "";
-        const employeeId = row.getAttribute("data-employee-id") || "";
-        const balanceCell = row.querySelector("td[data-balance-state]");
-        const isOwing = balanceCell && balanceCell.getAttribute("data-balance-state") === "owing";
-        const matchesTerm = !term || employeeName.includes(term) || employeeId.includes(term);
-        const matchesState = !showOwingOnly || isOwing;
-        const visible = matchesTerm && matchesState;
-        row.style.display = visible ? "" : "none";
-        if (visible) {
-          visibleCount += 1;
-        }
-      });
-      if (visibleCountLabel) {
-        visibleCountLabel.textContent = `Showing ${visibleCount} of ${rows.length}`;
-      }
-    };
-    if (filterInput) {
-      filterInput.addEventListener("input", applyOverviewFilter);
-    }
-    if (owingOnlyCheckbox) {
-      owingOnlyCheckbox.addEventListener("change", applyOverviewFilter);
-    }
-    applyOverviewFilter();
-
-    overviewView.querySelectorAll('.tax-week-cell').forEach(cell => {
-      cell.addEventListener('click', event => {
-        if (cell.getAttribute('data-effective') !== 'true') {
-          return;
-        }
-        const week = cell.getAttribute('data-week');
-        const empId = cell.getAttribute('data-employee');
-        const isCounted = cell.getAttribute('data-counted') === 'true';
-        if (event.altKey) {
-          event.preventDefault();
-          const isActive = cell.getAttribute('data-carry-active') === 'true';
-          if (isActive) {
-            updateWeekCarrybackForMember(empId, week, null);
-          } else {
-            if (!isCounted) {
-              alert('Only counted weeks can carry payments back.');
-              return;
-            }
-            const targetWeek = cell.getAttribute('data-carry-target');
-            if (!targetWeek) {
-              alert('No previous counted week is available for this employee.');
-              return;
-            }
-            updateWeekCarrybackForMember(empId, week, targetWeek);
-          }
-        } else {
-          toggleWeekExclusionForMember(empId, week);
-        }
-        renderOverview(lastWeeklyDataCache, lastEmployeesCache);
-        if (SETTINGS.enableEmployeeMenu) {
-          renderEmployeeMenu(lastEmployeesCache);
-        }
-      });
-    });
-
-    overviewView.querySelectorAll('.tax-reminder-link').forEach(link => {
-      link.addEventListener('click', e => {
-        e.preventDefault();
-        const msg = decodeURIComponent(link.getAttribute('data-msg'));
-        const empId = link.getAttribute('data-id');
-        navigator.clipboard.writeText(msg).then(() => {
-          alert('Reminder message copied to clipboard! Paste it in the compose box (Ctrl+V).');
-          window.open(`https://www.torn.com/messages.php#/p=compose&XID=${empId}`, '_blank');
-        });
-      });
-    });
   }
 
   function renderPaymentHistory(paymentHistory, COMPANY_MEMBERS) {

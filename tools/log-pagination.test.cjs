@@ -1,0 +1,26 @@
+const fs = require('node:fs');
+const vm = require('node:vm');
+const assert = require('node:assert/strict');
+const source = fs.readFileSync('torn-tax-tracker.user.js','utf8');
+const start = source.indexOf('  async function fetchAllLogs(');
+const end = source.indexOf('  function determineLogStartUnix', start);
+const calls = [];
+let responses = [];
+const ctx = vm.createContext({Date, DEFAULT_SETTINGS:{maxLogPages:25}, tornFetch:async (url,params) => { calls.push(params); return responses.shift(); }});
+vm.runInContext(source.slice(start,end), ctx);
+(async () => {
+  responses = [{log:{a:{timestamp:300},b:{timestamp:200}}},{log:{b:{timestamp:200},c:{timestamp:200},d:{timestamp:100}}}];
+  let result = await ctx.fetchAllLogs('',100,5);
+  assert.equal(Object.keys(result.logs).length,4);
+  assert.equal(calls[1].to,200);
+  assert.equal(result.hitPageLimit,false);
+  responses = [{log:{a:{timestamp:300}}}];
+  result = await ctx.fetchAllLogs('',100,1);
+  assert.equal(result.hitPageLimit,true);
+  responses = [{log:{a:{timestamp:300}}},{log:{a:{timestamp:300}}}];
+  result = await ctx.fetchAllLogs('',100,5);
+  assert.equal(result.hitPageLimit,true);
+  responses = [{}];
+  await assert.rejects(ctx.fetchAllLogs('',100,5), /no log collection/);
+  console.log('Timestamp overlap, deduplication, partial history and malformed responses passed.');
+})().catch(error => { console.error(error); process.exitCode=1; });
