@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      8.0.0-beta.3
+// @version      8.0.0-beta.4
 // @description  Simple eight-week staff payment checklist. Cash and items count together; older unpaid weeks remain recorded.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -979,21 +979,70 @@
     editor.style.margin = 'auto';
     editor.style.maxHeight = 'calc(100dvh - 48px)';
     editor.style.boxSizing = 'border-box';
-    editor.innerHTML = `<h2>Payment settings</h2><p>Sunday–Saturday (UTC). Cash and items count together.</p>
-      <p><strong>Full Access API key required for cash payment logs.</strong> A custom key with access to the required cash/item logs also works. Limited Access cannot read these logs.</p>
-      <p>Your key is stored in this browser and sent only to Torn's API.</p>
-      <label>API key <input id="simple-key" type="password" autocomplete="off"></label><br><br>
-      <label>Cash per week <input id="simple-cash" type="number" min="1" required></label><br><br>
-      <label>Items per week <input id="simple-items" type="number" min="1" required></label><br><br>
-      <label>Item name <input id="simple-item" required></label><br><br>
-      <details><summary>History and backup</summary><p>Changing rates recalculates the tracked period. Old settings are preserved, but per-member overrides and carrybacks are not used in this simplified view.</p>
-      <label>Track from year <input id="simple-year" type="number" min="2000" max="2100"></label><br><br>
-      <label>Track from week <input id="simple-week" type="number" min="1" max="53"></label><br><br>
-      <label>History scan limit (pages) <input id="simple-pages" type="number" min="1" max="100"></label><br><br>
-      <button id="simple-backup">Download settings backup</button><p>The backup excludes your API key.</p></details><p id="simple-settings-error" role="alert"></p>
-      <button id="simple-save">Save and refresh</button> <button id="simple-cancel">Cancel</button>`;
+    editor.setAttribute('aria-labelledby', 'simple-settings-title');
+    editor.innerHTML = `<style>
+      #simple-tax-settings {inset:16px !important;width:560px !important;max-width:calc(100vw - 32px) !important;height:fit-content !important;max-height:calc(100dvh - 32px) !important;margin:auto !important;padding:24px !important;border:1px solid #46515d !important;border-radius:14px !important;background:#1c2128 !important;color:#eef2f6 !important;font:14px/1.5 system-ui,sans-serif !important;box-shadow:0 20px 80px #0009 !important;overscroll-behavior:contain;}
+      #simple-tax-settings::backdrop {background:#0008;}
+      #simple-tax-settings * {box-sizing:border-box;}
+      #simple-tax-settings h2 {margin:0 0 4px !important;padding:0 !important;font:700 22px/1.3 system-ui !important;color:#fff !important;}
+      #simple-tax-settings h3 {margin:0 0 14px !important;font:600 14px/1.4 system-ui !important;color:#eef2f6 !important;}
+      #simple-tax-settings p {margin:6px 0 0 !important;color:#b9c4cf !important;font:13px/1.5 system-ui !important;}
+      #simple-tax-settings .tax-setting-section {margin-top:20px;padding:16px;background:#252c35;border:1px solid #39434e;border-radius:10px;}
+      #simple-tax-settings .tax-setting-grid {display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+      #simple-tax-settings label {display:block !important;margin:0 !important;color:#e2e9f0 !important;font:500 13px/1.5 system-ui !important;}
+      #simple-tax-settings input {display:block !important;width:100% !important;min-width:0 !important;height:42px !important;margin:6px 0 0 !important;padding:9px 11px !important;border:1px solid #596778 !important;border-radius:7px !important;background:#141a21 !important;color:#fff !important;font:400 15px/1.4 system-ui !important;color-scheme:dark;box-shadow:none !important;}
+      #simple-tax-settings input:focus-visible, #simple-tax-settings button:focus-visible, #simple-tax-settings summary:focus-visible {outline:2px solid #80bfff !important;outline-offset:3px !important;}
+      #simple-tax-settings .tax-setting-help {display:block;margin-top:7px;color:#aebdcb;font:12px/1.5 system-ui;}
+      #simple-tax-settings .tax-key-note {padding:10px 12px;margin-bottom:14px;border-left:3px solid #77b9ed;background:#1c2937;border-radius:5px;color:#cddff0;font:13px/1.5 system-ui;}
+      #simple-tax-settings details {margin-top:18px;border:1px solid #39434e;border-radius:8px;padding:12px 14px;}
+      #simple-tax-settings summary {cursor:pointer;color:#d9e3ed;font-weight:600;}
+      #simple-tax-settings details[open] summary {margin-bottom:14px;}
+      #simple-tax-settings button {width:auto !important;height:auto !important;margin:0 !important;padding:10px 15px !important;border:1px solid #596778 !important;border-radius:7px !important;background:#303a46 !important;color:#f4f7fa !important;font:600 13px/1.4 system-ui !important;cursor:pointer !important;text-shadow:none !important;box-shadow:none !important;}
+      #simple-tax-settings button:hover {filter:brightness(1.15);}
+      #simple-tax-settings #simple-save {background:#28784f !important;border-color:#419d70 !important;}
+      #simple-tax-settings .tax-setting-footer {position:sticky;bottom:-24px;display:flex;justify-content:flex-end;gap:10px;margin:20px -24px -24px;padding:16px 24px;background:#1c2128;border-top:1px solid #39434e;}
+      #simple-tax-settings #simple-settings-error {color:#ffb5b5 !important;}
+      #simple-tax-settings #simple-settings-error:empty {display:none;}
+      @media(max-width:480px) {#simple-tax-settings .tax-setting-grid {grid-template-columns:1fr;} #simple-tax-settings {padding:18px !important;} #simple-tax-settings .tax-setting-footer {margin:18px -18px -18px;padding:14px 18px;bottom:-18px;}}
+    </style>
+      <h2 id="simple-settings-title">Payment settings</h2>
+      <p>Sunday–Saturday · UTC</p>
+      <section class="tax-setting-section"><h3>Torn API connection</h3>
+        <div class="tax-key-note"><strong>Full Access required for cash logs.</strong><br>A custom key with the required log permissions also works. Limited Access cannot read these logs.</div>
+        <label for="simple-key">API key</label><input id="simple-key" type="password" autocomplete="off" spellcheck="false" aria-describedby="simple-key-help">
+        <span class="tax-setting-help" id="simple-key-help">Stored in this browser. Sent only to Torn’s API.</span>
+      </section>
+      <section class="tax-setting-section"><h3>Weekly payment</h3>
+        <div class="tax-setting-grid">
+          <label>Cash amount ($)<input id="simple-cash" type="number" min="1" required></label>
+          <label>Item quantity<input id="simple-items" type="number" min="1" required></label>
+        </div>
+        <label style="margin-top:14px !important">Item name<input id="simple-item" required></label>
+        <p id="simple-rate-preview" aria-live="polite"></p>
+        <span class="tax-setting-help">Staff can pay in cash, items, or a mix of both.</span>
+      </section>
+      <details><summary>History and backup</summary>
+        <div class="tax-setting-grid">
+          <label>Start year<input id="simple-year" type="number" min="2000" max="2100"></label>
+          <label>Start week<input id="simple-week" type="number" min="1" max="53"></label>
+        </div>
+        <label style="margin-top:14px !important">Scan limit (pages per receipt type)<input id="simple-pages" type="number" min="1" max="100"></label>
+        <p>Changing rates recalculates the tracked period. Per-member overrides and carrybacks are preserved but not applied in this view.</p>
+        <div style="margin-top:14px"><button type="button" id="simple-backup">Download settings backup</button></div>
+        <span class="tax-setting-help">Your API key is excluded from the backup.</span>
+      </details>
+      <p id="simple-settings-error" role="alert"></p>
+      <footer class="tax-setting-footer"><button type="button" id="simple-cancel">Cancel</button><button type="button" id="simple-save">Save and refresh</button></footer>`;
     const fields = {key: SETTINGS.apiKey, cash: SETTINGS.defaultMoneyTax, items: SETTINGS.defaultItemTax, item: SETTINGS.taxItemName, year: SETTINGS.startYear, week: SETTINGS.startWeek, pages: SETTINGS.maxLogPages};
     for (const [id, value] of Object.entries(fields)) editor.querySelector('#simple-' + id).value = value;
+    const updateRatePreview = () => {
+      const cash = Number(editor.querySelector('#simple-cash').value);
+      const quantity = Number(editor.querySelector('#simple-items').value);
+      const item = editor.querySelector('#simple-item').value.trim();
+      editor.querySelector('#simple-rate-preview').textContent = cash > 0 && quantity > 0 && item ? `One week = $${cash.toLocaleString()} or ${quantity.toLocaleString()} ${item}` : '';
+    };
+    for (const id of ['cash', 'items', 'item']) editor.querySelector('#simple-' + id).addEventListener('input', updateRatePreview);
+    updateRatePreview();
     editor.querySelector('#simple-cancel').onclick = () => editor.close();
     editor.addEventListener('close', () => editor.remove());
     editor.querySelector('#simple-backup').onclick = () => {
