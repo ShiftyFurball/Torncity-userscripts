@@ -55,7 +55,7 @@ assert.equal(bulk.weeks[37].status,'Unpaid');
 // and a failed request does not leave the refresh lock engaged.
 vm.runInContext(`
 let fetching=false, scanComplete=false;
-let SETTINGS={testMode:false,manualMode:true,manualMembers:{1:{name:'Alice'}},memberRequirements:{},taxItemName:'Xanax',startYear:2026,startWeek:40,maxWeeks:8,maxLogPages:25,enableEmployeeMenu:false};
+let SETTINGS={testMode:false,manualMode:true,manualMembers:{1:{name:'Alice'}},memberRequirements:{},taxItemName:'Xanax',defaultMoneyTax:10000000,defaultItemTax:7,startYear:2026,startWeek:40,maxWeeks:8,maxLogPages:25,enableEmployeeMenu:false};
 let DEFAULT_SETTINGS={taxItemName:'Xanax'}, DEFAULT_TAX_ITEM_ID=206, ACTIVE_PROFILE_ID='default', currentView='overview';
 let lastEmployeesCache={},lastWeeklyDataCache={},lastPaymentHistoryCache={};
 let fail=false, partial=false;
@@ -63,6 +63,7 @@ function setStatus(){} function normalizeEmployeeMap(m){return m;} function getD
 async function ensureItemCatalog(){return {};} function getItemIdForName(){return 206;} function normalizeItemName(s){return s.toLowerCase();}
 function buildEmployeeNameIndex(){return {};} function determineLogStartUnix(){return 1;} function formatWeekKey(){return '2026-W40';}
 function getYtdPeriod(){return {fromUnix:1};}
+function getTrackingPeriod(){return {startUnix:1,endUnix:9999999999,requestedWeeks:6};}
 async function getReceiptLogTypes(){return ['1','2'];}
 async function fetchReceiptLogs(){if(fail)throw Error('offline');return {logs:{a:{timestamp:1,data:{amount:10000000}},b:{timestamp:2,data:{amount:10000000}}},hitPageLimit:partial};}
 function generateRecentWeekKeys(){return ['2026-W40'];} function unixLogDate(){return new Date();} function getIsoWeekKey(){return '2026-W40';}

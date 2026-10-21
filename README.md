@@ -1,67 +1,43 @@
 # Torncity Userscripts
 
-Small collection repo for Torn userscripts.
+Torn staff payment tracker, beta 8.0.0-beta.10.
 
-## Year-to-date calculation (beta 8)
+[Install the beta](https://raw.githubusercontent.com/ShiftyFurball/Torncity-userscripts/codex/simple-eight-week-tracker/torn-tax-tracker.user.js)
 
-The beta now calculates all obligations and receipts from 1 January of the current UTC year through today. Employees joining later are charged from their join week. The first calendar week containing 1 January counts as a week, but receipts before 1 January are excluded. Prior-year arrears/credit are not imported. Cash and the configured item combine at the current weekly rates; historical rate changes are not modelled.
+## Payment periods
 
-Bulk payments clear the oldest unpaid YTD weeks first. Only the excess after all YTD obligations are covered becomes credit. The visible table shows only the most recent six weeks; earlier YTD weeks still count toward the balance. Click a week for actual receipt dates and amounts. An unpaid historical week can later become covered by a bulk payment.
+Settings → Calculate from Tax Period contains a start date and weeks to display (1–52). By default, Always show the latest period keeps the most recent six weeks visible. Selecting a date switches to a fixed period. Dates use their Sunday-start UTC week; future weeks are not charged. Staff joining later are charged from their join week.
 
-The former manual calculation start is superseded by YTD in this beta. Existing settings are retained, and Settings displays the automatic current tax year/first calendar week. A full-year history scan must complete before outstanding amounts can be confirmed.
+The table, last-payment date and outstanding amount cover only the selected period. Cash and the configured item (Xanax by default) combine at your configured weekly rates. Changing rates recalculates the requested history; historical rates are not stored separately.
 
-Regression checks include a 43-week year-to-date example with 37 weeks of bulk payments leaving six weeks/$45m owed at $7.5m per week, January/December boundaries, and complete non-overlapping six-week navigation. The mocked API browser preview verifies navigation leaves balances unchanged.
+Ordinary payments count in the week received. A payment worth more than one week, or receipts exceeding that week's requirement, is allocated to oldest unpaid weeks first. The tracker checks the preceding period (six previous weeks for a six-week view). If an individual payment in the selected period covers more weeks than that, its employee's lookback extends to that equivalent number of weeks. Other staff do not acquire a longer lookback because someone else made a large payment. Only value remaining after the checked arrears and selected period are covered becomes future credit.
 
-## Eight-week tracker beta
+Example at $7.5m/week: a $45m payment first checks the previous six weeks. If those were unpaid, it clears them rather than prepaying the displayed period. If they were already paid, it can cover the selected period. A $90m payment checks twelve previous weeks. Ordinary weekly payments remain attached to their actual receipt week.
 
-This branch contains a simpler payment checklist. It has not been released to existing Greasy Fork users.
+This is an allocation policy, not proof of what the sender intended. Arrears outside the checked lookback are not inferred. Click a week for the actual receipt dates and amounts. Incomplete scans show unconfirmed balances instead of declaring unpaid staff.
 
-Beta 3 puts the tracker in the browser top layer and opens Settings/API entry as native modal dialogs above it. The tracker header stays outside the scrolling content, dragging/resizing stays within the viewport, and header buttons no longer start a drag. API entry, settings and permission errors explain that cash payment logs need a Full Access key (or a suitably permissioned custom key). The local preview includes a simulated maximum-z-index sticky search bar to verify these layers.
+## Local cache and API access
 
-Beta 2 fixes the history scan and dark text inherited from Torn's table styles. Receipt types are discovered from Torn's `logtypes` catalog, then scanned separately so unrelated activity cannot exhaust the payment scan budget. Short final pages end the scan successfully. Pagination tests cover this regression, and the browser preview mocks the real fetch path with combined cash/Xanax receipts and conflicting page CSS.
+Receipts are stored only in browser localStorage, isolated by active profile and a SHA-256 fingerprint of the API key. The receipt cache does not include the API key itself. Completed history is reused; refresh scans from a five-minute overlap before the last successful checkpoint and deduplicates by log ID. Choosing an earlier period fetches the missing earlier history. Partial scans never establish complete history. Browser storage can be cleared by the browser; if cache writes fail the tracker continues with live results.
 
-- Eight weekly status cells per employee, with actual receipt dates/amounts on click.
-- Cash and the configured item (Xanax by default) count together. For a $10m / 7 Xanax rate, $5m plus 4 Xanax covers one week with a small credit.
-- Payments cover oldest unpaid weeks first; the eight-column display does not erase older debt. Tracking starts at the saved start year/week and each employee's join week when available.
-- Current-week shortfalls are labelled due this week. Outstanding totals include the current week.
-- Incomplete scans and request failures show unconfirmed balances instead of declaring staff unpaid.
-- Daily controls are Refresh, Settings and an outstanding-only filter. Settings expose the API key, cash rate, item rate and item name; history/backup controls are collapsed.
+The key remains in the existing local settings and is sent only to Torn's API. Cash logs require Full Access or a custom key permitting the relevant cash/item logs, employees, items and torn/logtypes. The per-receipt-type page limit controls the maximum batches fetched, not the calculation length. Each page contains up to 100 logs. Raw cached receipt data is reparsed when rates, items or exclusions change.
 
-[Install the beta from GitHub](https://raw.githubusercontent.com/ShiftyFurball/Torncity-userscripts/codex/simple-eight-week-tracker/torn-tax-tracker.user.js)
+## Trying the beta
 
-Before trying it, export the installed script/settings using your userscript manager. This beta uses the same script name and namespace and is intended to replace the old version in your manager. Do not enable both copies. The beta uses the existing active profile's storage; it does not erase old settings. Its updates point to this beta branch.
+Back up your existing userscript/settings before trying it. It uses the original name, namespace and active profile storage. Keep only one version enabled. Previous saved settings remain, but legacy per-member requirements, requirement resets, week exclusions and carrybacks do not affect this simplified calculation. Individual payment exclusions still apply. The original Greasy Fork release has not been updated; beta update URLs point to this branch.
 
-This is intentionally a new calculation policy: saved per-member rates, requirement-reset dates, excluded weeks and carrybacks are preserved in storage but do not affect the simplified calculation. Saved individual payment exclusions still apply. If you depend on those advanced adjustments, retain the old version until a migration is agreed. Changing the default rates recalculates the tracked period; historical rates are not yet recorded separately.
+The settings backup exports the active settings without its API key. It does not export the receipt cache.
 
-Payment history is fetched back to the saved tracking start on refresh, subject to the page limit per incoming receipt type. All older debt can only be confirmed when those scans complete. Only recognized incoming receipt/deposit logs are counted; unrecognized log formats require an anonymized example to support them. The API key needs access to `torn/logtypes` as well as employees, items and the relevant user logs. Live Torn API behavior still needs trial verification.
-
-For local verification:
+## Validation
 
 ```bash
 node --check torn-tax-tracker.user.js
 node tools/payment-ledger.test.cjs
 node tools/log-pagination.test.cjs
+node tools/period-cache.test.cjs
 node tools/preview.cjs
 ```
 
-The preview at `http://127.0.0.1:8766` uses simulated staff and payments, never a real API key. The settings backup button exports the active profile's settings without its API key.
+The preview at http://127.0.0.1:8766 uses a mocked Torn API and a fake key. Tests cover mixed payments, exclusions, historical periods, bulk arrears versus future credit, per-employee extended lookback, joins, timestamp pagination, cache reuse, missing coverage, deduplication and API-key isolation. Live Torn data still needs trial verification.
 
-## Current scripts
-
-- `torn-tax-tracker.user.js` — company tax tracker panel for Torn (overview, payments, employee management, reminders).
-  - Supports per-company profile IDs so you can keep separate tracking data if you move companies or manage multiple companies.
-
-## Repository layout
-
-- Root userscript files for direct install/update compatibility.
-- Future supporting docs should go in `docs/`.
-- Future helper tooling/scripts should go in `tools/`.
-
-## Development notes
-
-- Keep userscript metadata (`@version`, `@downloadURL`, `@updateURL`) updated when making user-facing changes.
-- Validate syntax before commit:
-
-```bash
-node --check torn-tax-tracker.user.js
-```
+MIT license; see LICENSE.

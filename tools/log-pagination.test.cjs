@@ -6,7 +6,7 @@ const start = source.indexOf('  async function fetchAllLogs(');
 const end = source.indexOf('  function determineLogStartUnix', start);
 const calls = [];
 let responses = [];
-const ctx = vm.createContext({Date, DEFAULT_SETTINGS:{maxLogPages:25}, tornFetch:async (url,params) => { calls.push(params); return responses.shift(); }});
+const ctx = vm.createContext({Date, TextEncoder, crypto:require('node:crypto').webcrypto, SETTINGS:{apiKey:'test-only'}, ACTIVE_PROFILE_ID:'default', localStorage:{getItem:()=>null,setItem:()=>{}}, DEFAULT_SETTINGS:{maxLogPages:25}, tornFetch:async (url,params) => { calls.push(params); return responses.shift(); }});
 vm.runInContext(source.slice(start,end), ctx);
 function page(oldest) { return Object.fromEntries(Array.from({length:100},(_,i) => ['log-'+(oldest+i),{timestamp:oldest+i}])); }
 (async () => {

@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      8.0.0-beta.9
-// @description  Year-to-date staff payment tracking with six-week views. Cash and items count together; bulk payments clear oldest arrears first.
+// @version      8.0.0-beta.10
+// @description  Cached staff payment tracking for an adjustable period, with cash/item payments checked against previous arrears before future credit.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
 // @grant        none
@@ -936,7 +936,7 @@
     panel.querySelector('#' + id).hidden = true;
     panel.querySelector('#' + id).style.display = 'none';
   }
-  panel.querySelector('#drag-bar span').textContent = 'Staff payments · year to date';
+  panel.querySelector('#drag-bar span').textContent = 'Staff payments';
   switchView("overview");
 
   function showApiPrompt() {
@@ -992,6 +992,7 @@
       #simple-tax-settings label {display:block !important;margin:0 !important;color:#e2e9f0 !important;font:500 13px/1.5 system-ui !important;}
       #simple-tax-settings input {display:block !important;width:100% !important;min-width:0 !important;height:42px !important;margin:6px 0 0 !important;padding:9px 11px !important;border:1px solid #596778 !important;border-radius:7px !important;background:#141a21 !important;color:#fff !important;font:400 15px/1.4 system-ui !important;color-scheme:dark;box-shadow:none !important;}
       #simple-tax-settings input:focus-visible, #simple-tax-settings button:focus-visible, #simple-tax-settings summary:focus-visible {outline:2px solid #80bfff !important;outline-offset:3px !important;}
+      #simple-tax-settings input[type="checkbox"] {display:inline-block !important;width:16px !important;height:16px !important;margin:0 7px 0 0 !important;padding:0 !important;vertical-align:middle;}
       #simple-tax-settings .tax-setting-help {display:block;margin-top:7px;color:#aebdcb;font:12px/1.5 system-ui;}
       #simple-tax-settings .tax-key-note {padding:10px 12px;margin-bottom:14px;border-left:3px solid #77b9ed;background:#1c2937;border-radius:5px;color:#cddff0;font:13px/1.5 system-ui;}
       #simple-tax-settings details {margin-top:18px;border:1px solid #39434e;border-radius:8px;padding:12px 14px;}
@@ -1023,10 +1024,12 @@
       </section>
       <section class="tax-setting-section"><h3>Calculate from Tax Period</h3>
         <div class="tax-setting-grid">
-          <label>Tax year<input id="simple-year" type="number" readonly></label>
-          <label>Starting calendar week<input id="simple-week" type="number" readonly></label>
+          <label>Start date<input id="simple-start" type="date"></label>
+          <label>Weeks to display<input id="simple-weeks" type="number" min="1" max="52" required></label>
         </div>
-        <p>Year to date: 1 January to today. The table displays six weeks at a time; all weeks in the year count toward the balance. Employees are charged from their join week if later. Debt from previous years is not included.</p>
+        <label style="margin-top:12px !important"><input id="simple-latest" type="checkbox">Always show the latest period</label>
+        <p>Weeks run Sunday–Saturday (UTC). A chosen date uses that week's Sunday. Bulk payments check the previous period first, extending further back if the payment covers more weeks. Only the selected period's balance is displayed.</p>
+        <span class="tax-setting-help">Payment records are cached in this browser. Refresh checks for new receipts.</span>
       </section>
       <details><summary>Advanced and backup</summary>
         <label style="margin-top:14px !important">Payment search limit (API pages)<input id="simple-pages" type="number" min="1" max="100" aria-describedby="simple-pages-help"></label>
@@ -1037,8 +1040,14 @@
       </details>
       <p id="simple-settings-error" role="alert"></p>
       <footer class="tax-setting-footer"><button type="button" id="simple-cancel">Cancel</button><button type="button" id="simple-save">Save and refresh</button></footer>`;
-    const fields = {key: SETTINGS.apiKey, cash: SETTINGS.defaultMoneyTax, items: SETTINGS.defaultItemTax, item: SETTINGS.taxItemName, year: new Date().getUTCFullYear(), week: 1, pages: SETTINGS.maxLogPages};
+    const period = getTrackingPeriod();
+    const fields = {key: SETTINGS.apiKey, cash: SETTINGS.defaultMoneyTax, items: SETTINGS.defaultItemTax, item: SETTINGS.taxItemName, start: period.startDate, weeks: period.requestedWeeks, pages: SETTINGS.maxLogPages};
     for (const [id, value] of Object.entries(fields)) editor.querySelector('#simple-' + id).value = value;
+    editor.querySelector('#simple-latest').checked = !SETTINGS.periodStart;
+    editor.querySelector('#simple-start').addEventListener('input', () => { editor.querySelector('#simple-latest').checked = false; });
+    editor.querySelector('#simple-latest').addEventListener('change', event => {
+      if (event.target.checked) editor.querySelector('#simple-start').value = getTrackingPeriod(new Date(), {periodWeeks:Number(editor.querySelector('#simple-weeks').value)}).startDate;
+    });
     const updateRatePreview = () => {
       const cash = Number(editor.querySelector('#simple-cash').value);
       const quantity = Number(editor.querySelector('#simple-items').value);
@@ -1060,8 +1069,10 @@
       for (const input of editor.querySelectorAll('input')) if (!input.checkValidity()) { input.reportValidity(); return; }
       const value = id => editor.querySelector('#simple-' + id).value.trim();
       if (!value('key') || !value('item')) { error.textContent = 'Enter an API key and item name.'; return; }
+      const periodSettings = {periodStart: editor.querySelector('#simple-latest').checked ? '' : value('start'), periodWeeks:Number(value('weeks'))};
+      try { getTrackingPeriod(new Date(), periodSettings); } catch (err) { error.textContent = err.message; return; }
       SETTINGS.apiKey = value('key'); SETTINGS.defaultMoneyTax = Number(value('cash')); SETTINGS.defaultItemTax = Number(value('items')); SETTINGS.taxItemName = value('item');
-      SETTINGS.startYear = Number(value('year')); SETTINGS.startWeek = Number(value('week')); SETTINGS.maxLogPages = Number(value('pages'));
+      SETTINGS.periodStart = periodSettings.periodStart; SETTINGS.periodWeeks = periodSettings.periodWeeks; SETTINGS.maxLogPages = Number(value('pages'));
       SETTINGS.testMode = false;
       saveSettings(SETTINGS); editor.close(); fetchData(true);
     };
@@ -1226,7 +1237,21 @@
         const employeeNameIndex = buildEmployeeNameIndex(employees);
         const logStartUnix = determineLogStartUnix();
         const logTypes = await getReceiptLogTypes();
-        const logResult = await fetchReceiptLogs(logTypes, logStartUnix, SETTINGS.maxLogPages);
+        const period = getTrackingPeriod();
+        let logResult = await fetchReceiptLogs(logTypes, logStartUnix, SETTINGS.maxLogPages);
+        let neededWeeks = period.requestedWeeks;
+        for (const log of Object.values(logResult.logs)) {
+          const timestamp = Number(log.timestamp);
+          if (timestamp < period.startUnix || timestamp > period.endUnix || !isLikelyIncomingMoneyLog(log)) continue;
+          if (!findEmployeeIdFromLog(log, employees, employeeNameIndex)) continue;
+          const quantity = getItemQuantityFromLog(log, configuredItemDisplayName, configuredItemId);
+          const equivalents = quantity > 0 ? quantity / SETTINGS.defaultItemTax : getMoneyAmountFromLog(log) / SETTINGS.defaultMoneyTax;
+          neededWeeks = Math.max(neededWeeks, Math.ceil(equivalents));
+        }
+        if (neededWeeks > 520) throw new Error('A payment implies over 520 weeks at the configured rate. Check the payment rates before calculating.');
+        if (neededWeeks > period.requestedWeeks) {
+          logResult = await fetchReceiptLogs(logTypes, period.startUnix - neededWeeks * MILLIS_PER_WEEK / 1000, SETTINGS.maxLogPages);
+        }
         const logs = logResult.logs;
 
         generateRecentWeekKeys(SETTINGS.maxWeeks).forEach(key => {
@@ -1238,7 +1263,7 @@
           const ts = unixLogDate(log);
           if (!ts) continue;
           const weekKey = getIsoWeekKey(ts);
-          if (ts.getTime() < logStartUnix * 1000) continue;
+          if (ts.getTime() > period.endUnix * 1000) continue;
           const logId = String(id);
           const senderId = findEmployeeIdFromLog(log, employees, employeeNameIndex);
           if (!senderId) continue;
@@ -1474,19 +1499,56 @@
   async function fetchReceiptLogs(types, fromUnix, maxPages) {
     const logs = {};
     let hitPageLimit = false;
+    const cacheKey = await paymentCacheKey();
+    let cache;
+    try { cache = JSON.parse(localStorage.getItem(cacheKey) || '{}'); } catch { cache = {}; }
+    if (!cache || cache.version !== 1 || !cache.streams || typeof cache.streams !== 'object') cache = {version:1, streams:{}};
     for (let index = 0; index < types.length; index++) {
       setStatus(`Checking payment history (${index + 1}/${types.length} receipt types)…`, 'info');
-      // Query each type separately: activity such as attacks and crimes cannot
-      // consume the payment history budget or hide older receipts.
-      const result = await fetchAllLogs(types[index], fromUnix, maxPages);
-      Object.assign(logs, result.logs);
+      const type = types[index];
+      const previous = cache.streams[type];
+      const reusable = previous && previous.complete && Number.isFinite(previous.from) && previous.from <= fromUnix && Number.isFinite(previous.through) && previous.logs && typeof previous.logs === 'object';
+      const through = Math.floor(Date.now() / 1000);
+      const scanFrom = reusable ? Math.max(fromUnix, previous.through - 300) : fromUnix;
+      const result = await fetchAllLogs(type, scanFrom, maxPages);
+      const combined = Object.assign({}, previous && previous.logs, result.logs);
+      for (const [id, log] of Object.entries(combined)) {
+        if (Number(log.timestamp) >= fromUnix && Number(log.timestamp) <= through) logs[id] = log;
+      }
       hitPageLimit = hitPageLimit || result.hitPageLimit;
+      // A partial request never advances the complete-coverage checkpoint.
+      cache.streams[type] = result.hitPageLimit && reusable
+        ? {...previous, logs:combined}
+        : {from: reusable ? previous.from : fromUnix, through, complete:!result.hitPageLimit, logs:combined};
+      try { localStorage.setItem(cacheKey, JSON.stringify(cache)); }
+      catch (error) { console.warn('Payment cache could not be saved; using live results.', error); }
     }
     return {logs, hitPageLimit};
   }
 
+  async function paymentCacheKey() {
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(SETTINGS.apiKey));
+    const fingerprint = Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2,'0')).join('');
+    return `torn_tax_receipts_v1_${ACTIVE_PROFILE_ID}_${fingerprint}`;
+  }
+
   function determineLogStartUnix() {
-    return getYtdPeriod().fromUnix;
+    const period = getTrackingPeriod();
+    return period.startUnix - period.requestedWeeks * MILLIS_PER_WEEK / 1000;
+  }
+
+  function getTrackingPeriod(now = new Date(), settings = SETTINGS) {
+    const requestedWeeks = Math.min(52, Math.max(1, Number(settings.periodWeeks) || 6));
+    const currentWeek = getIsoWeekKey(now);
+    const currentSunday = isoWeekStartDate(currentWeek).getTime();
+    const chosen = settings.periodStart ? new Date(settings.periodStart + 'T00:00:00Z') : null;
+    if (chosen && !Number.isFinite(chosen.getTime())) throw new Error('Choose a valid start date.');
+    const start = chosen ? isoWeekStartDate(getIsoWeekKey(chosen)).getTime() : currentSunday - (requestedWeeks - 1) * MILLIS_PER_WEEK;
+    if (start > currentSunday) throw new Error('The start date cannot be in a future week.');
+    const end = Math.min(start + requestedWeeks * MILLIS_PER_WEEK - 1, now.getTime());
+    const weeks = [];
+    for (let timestamp = start; timestamp <= end; timestamp += MILLIS_PER_WEEK) weeks.push(getIsoWeekKey(new Date(timestamp)));
+    return {requestedWeeks, weeks, startUnix:start/1000, endUnix:Math.floor(end/1000), currentWeek, startDate:new Date(start).toISOString().slice(0,10)};
   }
 
   function getYtdPeriod(now = new Date()) {
@@ -1857,12 +1919,46 @@
     return { weeks: result, owedWeeks: Math.max(0, weeks.length - available), creditWeeks: Math.max(0, available - weeks.length) };
   }
 
+  function calculatePeriodLedger(period, history, cashRate, itemRate, complete, joinKey) {
+    const inPeriod = history.filter(p => !p.excluded && p.timestamp >= period.startUnix * 1000 && p.timestamp <= period.endUnix * 1000);
+    const largest = inPeriod.reduce((max, p) => Math.max(max, Number(p.amount) / (p.type === 'money' ? cashRate : itemRate) || 0), 0);
+    const lookbackWeeks = Math.max(period.requestedWeeks, Math.ceil(largest));
+    const start = period.startUnix * 1000 - lookbackWeeks * MILLIS_PER_WEEK;
+    const weeks = [];
+    for (let timestamp = start; timestamp <= period.endUnix * 1000; timestamp += MILLIS_PER_WEEK) {
+      const key = getIsoWeekKey(new Date(timestamp));
+      if (!joinKey || compareWeekKeys(key, joinKey) >= 0) weeks.push(key);
+    }
+    const eligible = history.filter(p => !p.excluded && Number.isFinite(p.amount) && p.amount > 0 && p.timestamp >= start && p.timestamp <= period.endUnix * 1000 && weeks.includes(p.weekKey));
+    const normal = {};
+    let bulk = 0;
+    for (const payment of eligible) {
+      const equivalent = payment.amount / (payment.type === 'money' ? cashRate : itemRate);
+      if (equivalent > 1 + 1e-9) bulk += equivalent;
+      else normal[payment.weekKey] = (normal[payment.weekKey] || 0) + equivalent;
+    }
+    // Ordinary payments belong to their receipt week. Only larger payments,
+    // or excess above a week's requirement, are allocated to older shortfalls.
+    const calculated = weeks.map(key => {
+      const received = normal[key] || 0;
+      bulk += Math.max(0, received - 1);
+      return {key, coverage:Math.min(1, received)};
+    });
+    for (const week of calculated) {
+      const allocated = Math.min(1 - week.coverage, bulk);
+      week.coverage += allocated;
+      bulk = Math.max(0, bulk - allocated);
+      week.status = week.coverage >= 1 - 1e-9 ? 'Paid' : !complete ? 'Unable to confirm' : week.coverage > 1e-9 ? 'Part paid' : 'Unpaid';
+    }
+    const visible = calculated.filter(week => period.weeks.includes(week.key));
+    return {weeks:visible, owedWeeks:visible.reduce((sum, week) => sum + Math.max(0, 1 - week.coverage), 0), creditWeeks:bulk, lookbackWeeks};
+  }
+
   function renderOverview(weeklyData, employees) {
     if (!overviewView) return;
-    const period = getYtdPeriod();
-    const all = period.weeks;
+    const period = getTrackingPeriod();
     const current = period.currentWeek;
-    const visible = all.slice(-6);
+    const visible = period.weeks;
     const cash = Number(SETTINGS.defaultMoneyTax) || 10000000;
     const items = Number(SETTINGS.defaultItemTax) || 7;
     overviewView.innerHTML = `<style>
@@ -1871,20 +1967,19 @@
       #tax-panel #simple-grid th {color:#bfcbd8 !important;font-weight:600;}
       #tax-panel #simple-grid button {font:inherit !important;}
     </style><p>Each week: $${cash.toLocaleString()} or ${items} ${escapeHtml(SETTINGS.taxItemName)} — cash and items can be combined.</p>
-      <p>Calculating from 1 January ${period.year} to today (UTC). Bulk payments cover oldest unpaid weeks first. The balance includes the whole year, regardless of the six weeks displayed. The first calendar week is included even if it starts in December; only receipts from January onward count.</p>
+      <p>Showing ${escapeHtml(formatWeekHeader(visible[0]).fullStartLabel)} onward · ${visible.length} weeks (UTC). Ordinary payments count in the week received. Bulk payments check the previous ${period.requestedWeeks} weeks first, extending further if needed. Balances below cover only the displayed period.</p>
       <label><input type="checkbox" id="simple-unpaid"> Show staff with outstanding payments only</label>
       <div style="overflow:auto;margin-top:12px"><table id="simple-grid" style="width:100%;border-collapse:collapse;white-space:nowrap"><thead></thead><tbody></tbody></table></div><div id="simple-details" style="margin-top:16px"></div>`;
     const table = overviewView.querySelector('table');
     const header = table.querySelector('thead').insertRow();
-    for (const label of ['Employee', ...visible.map(k => formatWeekHeader(k).startLabel), 'YTD outstanding / credit', 'Last payment (UTC)']) {
+    for (const label of ['Employee', ...visible.map(k => formatWeekHeader(k).startLabel), 'Period outstanding / credit', 'Last payment in period (UTC)']) {
       const th = document.createElement('th'); th.textContent = label; th.style.cssText = 'padding:10px;border-bottom:1px solid #555;text-align:left'; header.append(th);
     }
     for (const id of Object.keys(employees).sort((a, b) => getEmployeeName(employees[a]).localeCompare(getEmployeeName(employees[b])))) {
       const joined = getEmployeeJoinWeek(employees[id]) || getEmployeeJoinWeekFromDays(employees[id]);
       const joinKey = joined ? formatWeekKey(...joined) : null;
-      const weeks = all.filter(k => !joinKey || compareWeekKeys(k, joinKey) >= 0);
       const history = lastPaymentHistoryCache[id] || [];
-      const ledger = calculatePaymentLedger(weeks, history, cash, items, scanComplete);
+      const ledger = calculatePeriodLedger(period, history, cash, items, scanComplete, joinKey);
       const row = table.querySelector('tbody').insertRow();
       row.dataset.owing = String(!scanComplete || ledger.owedWeeks > 1e-9);
       const cell = text => { const td = row.insertCell(); td.textContent = text; td.style.cssText = 'padding:10px;border-bottom:1px solid #444;color:#eee'; return td; };
@@ -1897,8 +1992,8 @@
         btn.style.cssText = `color:${label === 'Paid' ? '#91e5ae' : label === 'Unpaid' ? '#ffb3b3' : '#e5dfad'};background:#292929;border:1px solid #555;border-radius:5px;padding:7px;cursor:pointer`;
         btn.addEventListener('click', () => showSimplePayments(id, key, employees)); td.append(btn);
       }
-      cell(!scanComplete ? 'Unable to confirm' : ledger.creditWeeks > 1e-9 ? `${ledger.creditWeeks.toFixed(2)} weeks credit` : ledger.owedWeeks <= 1e-9 ? 'Paid up' : `$${Math.round(ledger.owedWeeks * cash).toLocaleString()} or ${(ledger.owedWeeks * items).toFixed(2)} ${SETTINGS.taxItemName} (includes this week)`);
-      const last = history.filter(p => !p.excluded).sort((a, b) => b.timestamp - a.timestamp)[0];
+      cell(!scanComplete ? 'Unable to confirm' : ledger.creditWeeks > 1e-9 ? `${ledger.creditWeeks.toFixed(2)} weeks credit` : ledger.owedWeeks <= 1e-9 ? 'Paid up' : `$${Math.round(ledger.owedWeeks * cash).toLocaleString()} or ${(ledger.owedWeeks * items).toFixed(2)} ${SETTINGS.taxItemName}${visible.includes(current) ? ' (includes this week)' : ''}`);
+      const last = history.filter(p => !p.excluded && p.timestamp >= period.startUnix * 1000 && p.timestamp <= period.endUnix * 1000).sort((a, b) => b.timestamp - a.timestamp)[0];
       cell(last ? new Date(last.timestamp).toISOString().slice(0, 16).replace('T', ' ') : scanComplete ? 'None' : 'Unknown');
     }
     overviewView.querySelector('#simple-unpaid').addEventListener('change', event => {
@@ -1909,7 +2004,7 @@
   function showSimplePayments(id, key, employees) {
     const detail = overviewView.querySelector('#simple-details'); detail.replaceChildren();
     const heading = document.createElement('h3'); heading.textContent = `${getEmployeeName(employees[id])} · received week of ${formatWeekHeader(key).startLabel}`; detail.append(heading);
-    const explanation = document.createElement('p'); explanation.textContent = 'These are actual receipts for this week. The grid allocates payments to oldest unpaid weeks first.'; detail.append(explanation);
+    const explanation = document.createElement('p'); explanation.textContent = 'These are actual receipts for this week. Ordinary payments count here; bulk payments and weekly excess can cover older unpaid weeks before becoming future credit.'; detail.append(explanation);
     const entries = (lastPaymentHistoryCache[id] || []).filter(p => p.weekKey === key);
     if (!entries.length) { const p = document.createElement('p'); p.textContent = scanComplete ? 'No payments received this week.' : 'No payments found in the history scanned so far.'; detail.append(p); }
     for (const entry of entries) {
