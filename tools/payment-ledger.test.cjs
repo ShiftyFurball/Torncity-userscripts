@@ -40,6 +40,23 @@ vm.runInContext('const MILLIS_PER_DAY=86400000; const MILLIS_PER_WEEK=604800000;
 for (const date of ['2025-12-28','2026-01-04','2026-10-18','2027-01-03']) {
   assert.equal(context.isoWeekStartDate(context.getIsoWeekKey(new Date(date))).toISOString().slice(0,10), date);
 }
+vm.runInContext(extract('getYtdPeriod') + '\n' + extract('getSixWeekBlock'), context);
+const ytd = context.getYtdPeriod(new Date('2026-10-21T12:00:00Z'));
+assert.equal(ytd.fromUnix, Date.UTC(2026,0,1)/1000);
+assert.equal(ytd.weeks.length,43);
+const newYear = context.getYtdPeriod(new Date('2027-01-01T12:00:00Z'));
+assert.equal(newYear.weeks.length,1);
+assert.equal(newYear.fromUnix,Date.UTC(2027,0,1)/1000);
+assert.equal(newYear.weeks[0],'2026-W53');
+const bulk = context.calculatePaymentLedger(ytd.weeks,[{type:'money',amount:37*7500000,weekKey:'2026-W37',excluded:false}],7500000,7,true);
+assert.equal(bulk.owedWeeks*7500000,45000000,'bulk payment must clear earlier YTD weeks, leaving six weeks due');
+assert.equal(bulk.weeks[37].status,'Unpaid');
+const blocks = [];
+for (let offset=0;offset<8;offset++) blocks.push(...context.getSixWeekBlock(ytd.weeks,offset).visible);
+assert.equal(new Set(blocks).size,43);
+assert.equal(blocks.length,43,'six-week blocks neither skip nor repeat a week');
+assert.equal(context.getSixWeekBlock(ytd.weeks,0).visible.length,6);
+assert.equal(context.getSixWeekBlock(ytd.weeks,99).hasPrevious,false);
 // Integration: exclusions are applied once, incomplete scans remain uncertain,
 // and a failed request does not leave the refresh lock engaged.
 vm.runInContext(`
@@ -51,6 +68,7 @@ let fail=false, partial=false;
 function setStatus(){} function normalizeEmployeeMap(m){return m;} function getDefaultRequirement(){return {type:'money',amount:10000000};}
 async function ensureItemCatalog(){return {};} function getItemIdForName(){return 206;} function normalizeItemName(s){return s.toLowerCase();}
 function buildEmployeeNameIndex(){return {};} function determineLogStartUnix(){return 1;} function formatWeekKey(){return '2026-W40';}
+function getYtdPeriod(){return {fromUnix:1};}
 async function getReceiptLogTypes(){return ['1','2'];}
 async function fetchReceiptLogs(){if(fail)throw Error('offline');return {logs:{a:{timestamp:1,data:{amount:10000000}},b:{timestamp:2,data:{amount:10000000}}},hitPageLimit:partial};}
 function generateRecentWeekKeys(){return ['2026-W40'];} function unixLogDate(){return new Date();} function getIsoWeekKey(){return '2026-W40';}

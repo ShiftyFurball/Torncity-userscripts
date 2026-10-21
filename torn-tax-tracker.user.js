@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      8.0.0-beta.7
-// @description  Simple eight-week staff payment checklist. Cash and items count together; older unpaid weeks remain recorded.
+// @version      8.0.0-beta.8
+// @description  Year-to-date staff payment tracking with six-week views. Cash and items count together; bulk payments clear oldest arrears first.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
 // @grant        none
@@ -439,6 +439,7 @@
     sanitizeSettingsInPlace();
   }
 
+  let blockOffset = 0;
   let scanComplete = false;
   let fetching = false;
   let lastEmployeesCache = {};
@@ -936,7 +937,7 @@
     panel.querySelector('#' + id).hidden = true;
     panel.querySelector('#' + id).style.display = 'none';
   }
-  panel.querySelector('#drag-bar span').textContent = 'Staff payments · 8 weeks';
+  panel.querySelector('#drag-bar span').textContent = 'Staff payments · year to date';
   switchView("overview");
 
   function showApiPrompt() {
@@ -1023,9 +1024,10 @@
       </section>
       <section class="tax-setting-section"><h3>Calculate from Tax Period</h3>
         <div class="tax-setting-grid">
-          <label>Start year<input id="simple-year" type="number" min="2000" max="2100"></label>
-          <label>Start week<input id="simple-week" type="number" min="1" max="53"></label>
+          <label>Tax year<input id="simple-year" type="number" readonly></label>
+          <label>Starting calendar week<input id="simple-week" type="number" readonly></label>
         </div>
+        <p>Year to date: 1 January to today. The table displays six weeks at a time; all weeks in the year count toward the balance. Employees are charged from their join week if later. Debt from previous years is not included.</p>
       </section>
       <details><summary>Advanced and backup</summary>
         <label style="margin-top:14px !important">Payment search limit (API pages)<input id="simple-pages" type="number" min="1" max="100" aria-describedby="simple-pages-help"></label>
@@ -1036,7 +1038,7 @@
       </details>
       <p id="simple-settings-error" role="alert"></p>
       <footer class="tax-setting-footer"><button type="button" id="simple-cancel">Cancel</button><button type="button" id="simple-save">Save and refresh</button></footer>`;
-    const fields = {key: SETTINGS.apiKey, cash: SETTINGS.defaultMoneyTax, items: SETTINGS.defaultItemTax, item: SETTINGS.taxItemName, year: SETTINGS.startYear, week: SETTINGS.startWeek, pages: SETTINGS.maxLogPages};
+    const fields = {key: SETTINGS.apiKey, cash: SETTINGS.defaultMoneyTax, items: SETTINGS.defaultItemTax, item: SETTINGS.taxItemName, year: new Date().getUTCFullYear(), week: 1, pages: SETTINGS.maxLogPages};
     for (const [id, value] of Object.entries(fields)) editor.querySelector('#simple-' + id).value = value;
     const updateRatePreview = () => {
       const cash = Number(editor.querySelector('#simple-cash').value);
@@ -1237,7 +1239,7 @@
           const ts = unixLogDate(log);
           if (!ts) continue;
           const weekKey = getIsoWeekKey(ts);
-          if (!isWeekOnOrAfter(weekKey, formatWeekKey(SETTINGS.startYear, SETTINGS.startWeek))) continue;
+          if (ts.getTime() < logStartUnix * 1000) continue;
           const logId = String(id);
           const senderId = findEmployeeIdFromLog(log, employees, employeeNameIndex);
           if (!senderId) continue;
@@ -1485,7 +1487,25 @@
   }
 
   function determineLogStartUnix() {
-    return Math.floor(isoWeekStartDate(formatWeekKey(SETTINGS.startYear, SETTINGS.startWeek)).getTime() / 1000);
+    return getYtdPeriod().fromUnix;
+  }
+
+  function getYtdPeriod(now = new Date()) {
+    const year = now.getUTCFullYear();
+    const januaryFirst = new Date(Date.UTC(year, 0, 1));
+    const currentWeek = getIsoWeekKey(now);
+    const weeks = [];
+    const firstSunday = isoWeekStartDate(getIsoWeekKey(januaryFirst)).getTime();
+    const currentSunday = isoWeekStartDate(currentWeek).getTime();
+    for (let timestamp = firstSunday; timestamp <= currentSunday; timestamp += MILLIS_PER_WEEK) weeks.push(getIsoWeekKey(new Date(timestamp)));
+    return {year, fromUnix: januaryFirst.getTime() / 1000, weeks, currentWeek};
+  }
+
+  function getSixWeekBlock(weeks, offset) {
+    const lastOffset = Math.max(0, Math.ceil(weeks.length / 6) - 1);
+    const safeOffset = Math.min(lastOffset, Math.max(0, offset));
+    const end = weeks.length - safeOffset * 6;
+    return {visible: weeks.slice(Math.max(0, end - 6), end), offset: safeOffset, hasPrevious: safeOffset < lastOffset, hasNext: safeOffset > 0};
   }
 
   function generateRecentWeekKeys(count) {
@@ -1846,14 +1866,12 @@
 
   function renderOverview(weeklyData, employees) {
     if (!overviewView) return;
-    const recentWeeks = generateRecentWeekKeys(8);
-    const current = recentWeeks[recentWeeks.length - 1];
-    const trackingStart = formatWeekKey(SETTINGS.startYear, SETTINGS.startWeek);
-    const visible = recentWeeks.filter(key => compareWeekKeys(key, trackingStart) >= 0);
-    const start = isoWeekStartDate(trackingStart);
-    const end = isoWeekStartDate(current);
-    const all = [];
-    for (let day = start.getTime(); day <= end.getTime(); day += MILLIS_PER_WEEK) all.push(getIsoWeekKey(new Date(day)));
+    const period = getYtdPeriod();
+    const all = period.weeks;
+    const current = period.currentWeek;
+    const block = getSixWeekBlock(all, blockOffset);
+    blockOffset = block.offset;
+    const visible = block.visible;
     const cash = Number(SETTINGS.defaultMoneyTax) || 10000000;
     const items = Number(SETTINGS.defaultItemTax) || 7;
     overviewView.innerHTML = `<style>
@@ -1861,13 +1879,17 @@
       #tax-panel #simple-details, #tax-panel #simple-details p, #tax-panel #simple-details h3 {color:#eee !important;background:#1b1b1b !important;}
       #tax-panel #simple-grid th {color:#bfcbd8 !important;font-weight:600;}
       #tax-panel #simple-grid button {font:inherit !important;}
+      #tax-panel .tax-block-controls {display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:12px 0;color:#eee;}
+      #tax-panel .tax-block-controls button {padding:7px 10px;border:1px solid #667383;border-radius:6px;background:#303a46;color:#fff;cursor:pointer;font:inherit;}
+      #tax-panel .tax-block-controls button:disabled {opacity:.4;cursor:default;}
     </style><p>Each week: $${cash.toLocaleString()} or ${items} ${escapeHtml(SETTINGS.taxItemName)} — cash and items can be combined.</p>
-      <p>Sunday–Saturday, UTC. Payments cover oldest unpaid weeks first. Older debt stays recorded from ${escapeHtml(formatWeekHeader(formatWeekKey(SETTINGS.startYear, SETTINGS.startWeek)).fullStartLabel)}. Click a week to see payments received.</p>
+      <p>Calculating from 1 January ${period.year} to today (UTC). Bulk payments cover oldest unpaid weeks first. The balance includes the whole year, regardless of the six weeks displayed. The first calendar week is included even if it starts in December; only receipts from January onward count.</p>
+      <div class="tax-block-controls"><button type="button" id="tax-block-previous" ${block.hasPrevious ? '' : 'disabled'}>← Previous 6 weeks</button><span>${escapeHtml(formatWeekHeader(visible[0]).fullStartLabel)} – ${escapeHtml(formatWeekHeader(visible[visible.length - 1]).fullStartLabel)} (week starts)</span><button type="button" id="tax-block-next" ${block.hasNext ? '' : 'disabled'}>Next 6 weeks →</button><button type="button" id="tax-block-latest" ${block.hasNext ? '' : 'disabled'}>Latest</button></div>
       <label><input type="checkbox" id="simple-unpaid"> Show staff with outstanding payments only</label>
       <div style="overflow:auto;margin-top:12px"><table id="simple-grid" style="width:100%;border-collapse:collapse;white-space:nowrap"><thead></thead><tbody></tbody></table></div><div id="simple-details" style="margin-top:16px"></div>`;
     const table = overviewView.querySelector('table');
     const header = table.querySelector('thead').insertRow();
-    for (const label of ['Employee', ...visible.map(k => formatWeekHeader(k).startLabel), 'Outstanding / credit', 'Last payment (UTC)']) {
+    for (const label of ['Employee', ...visible.map(k => formatWeekHeader(k).startLabel), 'YTD outstanding / credit', 'Last payment (UTC)']) {
       const th = document.createElement('th'); th.textContent = label; th.style.cssText = 'padding:10px;border-bottom:1px solid #555;text-align:left'; header.append(th);
     }
     for (const id of Object.keys(employees).sort((a, b) => getEmployeeName(employees[a]).localeCompare(getEmployeeName(employees[b])))) {
@@ -1895,6 +1917,12 @@
     overviewView.querySelector('#simple-unpaid').addEventListener('change', event => {
       for (const row of table.querySelectorAll('tbody tr')) row.hidden = event.target.checked && row.dataset.owing === 'false';
     });
+    for (const [id, offset] of [['previous', blockOffset + 1], ['next', blockOffset - 1], ['latest', 0]]) {
+      overviewView.querySelector('#tax-block-' + id).addEventListener('click', () => {
+        blockOffset = offset;
+        renderOverview(lastWeeklyDataCache, lastEmployeesCache);
+      });
+    }
   }
 
   function showSimplePayments(id, key, employees) {
