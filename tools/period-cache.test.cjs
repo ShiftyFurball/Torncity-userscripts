@@ -40,6 +40,27 @@ assert.equal(calc([entry(0,45000000,'money',true)]).owedWeeks,6);
 assert.equal(calc([entry(7,90000000)]).owedWeeks,6,'receipts after the selected period cannot pay historical balances');
 assert.equal(calc(Array.from({length:6},(_,i)=>entry(i,cash))).owedWeeks,0,'ordinary weekly receipts stay in their receipt weeks despite earlier arrears');
 assert.equal(calc([entry(0,cash)]).weeks[0].status,'Paid');
+vm.runInContext(extract('planWriteOff')+'\n'+extract('buildPaymentReminder'),ctx);
+const free = [{weekKey:period.weeks[0],coverage:1}];
+let adjusted=ctx.calculatePeriodLedger(period,[],cash,item,true,null,free);
+assert.equal(adjusted.owedWeeks,5,'one free week reduces the period by exactly one obligation');
+assert.equal(adjusted.creditWeeks,0,'waivers cannot invent a cash credit');
+assert.equal(adjusted.weeks[0].writeOffCoverage,1);
+const plan=ctx.planWriteOff(adjusted.weeks,11250000,cash,period.weeks[0]);
+assert.equal(plan.length,2);
+assert.equal(plan[0].coverage,1);
+assert.equal(plan[1].coverage,0.5);
+assert.throws(()=>ctx.planWriteOff(adjusted.weeks,999999999,cash,period.weeks[0]),/exceeds/);
+assert.throws(()=>ctx.planWriteOff(adjusted.weeks,-1,cash,period.weeks[0]),/positive/);
+adjusted=ctx.calculatePeriodLedger(period,[],cash,item,true,null,[{weekKey:'2020-W01',coverage:1}]);
+assert.equal(adjusted.owedWeeks,6,'adjustments for other weeks do not leak into the current period');
+assert.equal(ctx.calculatePeriodLedger(period,[],cash,item,true,null,[]).owedWeeks,6,'removing a write-off restores the obligation');
+const reminder=ctx.buildPaymentReminder('123','Alice',5,cash,item,'Xanax',period);
+assert.equal(reminder.recipient,'123');
+assert(reminder.body.includes('$37,500,000'));
+assert(reminder.body.includes('35 Xanax'));
+assert(reminder.body.includes('2026-09-13'));
+assert(reminder.body.includes('Hi Alice'));
 
 const storage=new Map(); const requests=[]; let failPartial=false;
 const cacheCtx=vm.createContext({Date,TextEncoder,crypto:require('node:crypto').webcrypto,console,SETTINGS:{apiKey:'test-key-one'},ACTIVE_PROFILE_ID:'default',

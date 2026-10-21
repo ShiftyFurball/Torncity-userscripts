@@ -1,6 +1,6 @@
 # Torncity Userscripts
 
-Torn staff payment tracker, beta 8.0.0-beta.10.
+Torn staff payment tracker, beta 8.0.0-beta.11.
 
 [Install the beta](https://raw.githubusercontent.com/ShiftyFurball/Torncity-userscripts/codex/simple-eight-week-tracker/torn-tax-tracker.user.js)
 
@@ -15,6 +15,12 @@ Ordinary payments count in the week received. A payment worth more than one week
 Example at $7.5m/week: a $45m payment first checks the previous six weeks. If those were unpaid, it clears them rather than prepaying the displayed period. If they were already paid, it can cover the selected period. A $90m payment checks twelve previous weeks. Ordinary weekly payments remain attached to their actual receipt week.
 
 This is an allocation policy, not proof of what the sender intended. Arrears outside the checked lookback are not inferred. Click a week for the actual receipt dates and amounts. Incomplete scans show unconfirmed balances instead of declaring unpaid staff.
+
+## Reminders and write-offs
+
+Click an employee name with a confirmed outstanding balance to open Torn's message composer for that player. The script prepares a friendly subject and reminder showing the selected period's cash/item amount after write-offs. It never submits a message. Drafts are stored locally under a random token, expire after 30 minutes, and are accepted only on the matching recipient's compose route. If Torn's editor can be identified and is empty, the script fills it; existing text is preserved. A preview/Copy reminder fallback is available if the editor cannot be filled. Live Torn composer compatibility still needs checking.
+
+Use **Write off / adjustments** beside the balance to enter a cash amount, choose the first applicable week, and add a note. **Use one free week** enters the configured weekly cash rate. The amount is distributed over unpaid obligations from the chosen week onward within the selected period; amounts above that outstanding tax are rejected. Adjustments are stored as week-equivalent fractions at the rate when entered, so a free week remains a free week after a rate change. They reduce requirements instead of inventing receipts. Weeks show **Written off** or **Paid · adjusted**, and saved adjustments have an **Undo** control. They persist in the active profile and are included in the settings backup. Actual payment history remains separate.
 
 ## Local cache and API access
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      8.0.0-beta.10
+// @version      8.0.0-beta.11
 // @description  Cached staff payment tracking for an adjustable period, with cash/item payments checked against previous arrears before future credit.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -440,6 +440,7 @@
   }
 
   let scanComplete = false;
+  let reminderDraftTimer = null;
   let fetching = false;
   let lastEmployeesCache = {};
   let lastWeeklyDataCache = {};
@@ -938,6 +939,8 @@
   }
   panel.querySelector('#drag-bar span').textContent = 'Staff payments';
   switchView("overview");
+  installPaymentReminderDraft();
+  window.addEventListener('hashchange', installPaymentReminderDraft);
 
   function showApiPrompt() {
     if (document.getElementById('tax-api-prompt')) return;
@@ -1919,7 +1922,7 @@
     return { weeks: result, owedWeeks: Math.max(0, weeks.length - available), creditWeeks: Math.max(0, available - weeks.length) };
   }
 
-  function calculatePeriodLedger(period, history, cashRate, itemRate, complete, joinKey) {
+  function calculatePeriodLedger(period, history, cashRate, itemRate, complete, joinKey, writeOffs = []) {
     const inPeriod = history.filter(p => !p.excluded && p.timestamp >= period.startUnix * 1000 && p.timestamp <= period.endUnix * 1000);
     const largest = inPeriod.reduce((max, p) => Math.max(max, Number(p.amount) / (p.type === 'money' ? cashRate : itemRate) || 0), 0);
     const lookbackWeeks = Math.max(period.requestedWeeks, Math.ceil(largest));
@@ -1941,8 +1944,9 @@
     // or excess above a week's requirement, are allocated to older shortfalls.
     const calculated = weeks.map(key => {
       const received = normal[key] || 0;
-      bulk += Math.max(0, received - 1);
-      return {key, coverage:Math.min(1, received)};
+      const writeOffCoverage = Math.min(1, writeOffs.filter(entry => entry.weekKey === key && Number.isFinite(entry.coverage) && entry.coverage > 0).reduce((sum, entry) => sum + entry.coverage, 0));
+      bulk += Math.max(0, received - (1 - writeOffCoverage));
+      return {key, coverage:writeOffCoverage + Math.min(1 - writeOffCoverage, received), writeOffCoverage};
     });
     for (const week of calculated) {
       const allocated = Math.min(1 - week.coverage, bulk);
@@ -1979,20 +1983,44 @@
       const joined = getEmployeeJoinWeek(employees[id]) || getEmployeeJoinWeekFromDays(employees[id]);
       const joinKey = joined ? formatWeekKey(...joined) : null;
       const history = lastPaymentHistoryCache[id] || [];
-      const ledger = calculatePeriodLedger(period, history, cash, items, scanComplete, joinKey);
+      const adjustments = getMemberWriteOffs(id);
+      const ledger = calculatePeriodLedger(period, history, cash, items, scanComplete, joinKey, adjustments);
       const row = table.querySelector('tbody').insertRow();
       row.dataset.owing = String(!scanComplete || ledger.owedWeeks > 1e-9);
       const cell = text => { const td = row.insertCell(); td.textContent = text; td.style.cssText = 'padding:10px;border-bottom:1px solid #444;color:#eee'; return td; };
-      cell(getEmployeeName(employees[id]) || id);
+      const nameCell = cell('');
+      const nameLink = document.createElement('a');
+      const employeeName = getEmployeeName(employees[id]) || id;
+      nameLink.textContent = employeeName;
+      nameLink.href = `https://www.torn.com/messages.php#/p=compose&XID=${encodeURIComponent(id)}`;
+      nameLink.target = '_blank'; nameLink.rel = 'noopener noreferrer';
+      nameLink.style.cssText = 'color:#91caff !important;text-decoration:underline;cursor:pointer';
+      nameLink.title = 'Open a friendly payment reminder in Torn messages';
+      nameLink.addEventListener('click', event => {
+        if (!scanComplete || ledger.owedWeeks <= 1e-9) {
+          event.preventDefault(); setStatus(!scanComplete ? 'Finish the payment scan before drafting an amount owed.' : `${employeeName} has no outstanding amount in this period.`, 'info'); return;
+        }
+        const draft = buildPaymentReminder(id, employeeName, ledger.owedWeeks, cash, items, SETTINGS.taxItemName, period);
+        const token = crypto.randomUUID();
+        try { localStorage.setItem('torn_tax_message_' + token, JSON.stringify(draft)); }
+        catch { event.preventDefault(); setStatus('The reminder could not be saved. Check browser storage and try again.', 'error'); return; }
+        nameLink.href = `https://www.torn.com/messages.php?taxDraft=${token}#/p=compose&XID=${encodeURIComponent(id)}`;
+      });
+      nameCell.append(nameLink);
       for (const key of visible) {
         const week = ledger.weeks.find(w => w.key === key);
         let label = week ? week.status : '—';
         if (key === current && scanComplete && week && week.status !== 'Paid') label = week.coverage > 0 ? 'Part paid · due' : 'Due this week';
+        if (week && week.status === 'Paid' && week.writeOffCoverage > 0) label = week.writeOffCoverage >= 1 - 1e-9 ? 'Written off' : 'Paid · adjusted';
         const td = cell(''); const btn = document.createElement('button'); btn.textContent = label;
-        btn.style.cssText = `color:${label === 'Paid' ? '#91e5ae' : label === 'Unpaid' ? '#ffb3b3' : '#e5dfad'};background:#292929;border:1px solid #555;border-radius:5px;padding:7px;cursor:pointer`;
+        btn.style.cssText = `color:${week && week.status === 'Paid' ? '#91e5ae' : label === 'Unpaid' ? '#ffb3b3' : '#e5dfad'};background:#292929;border:1px solid #555;border-radius:5px;padding:7px;cursor:pointer`;
         btn.addEventListener('click', () => showSimplePayments(id, key, employees)); td.append(btn);
       }
-      cell(!scanComplete ? 'Unable to confirm' : ledger.creditWeeks > 1e-9 ? `${ledger.creditWeeks.toFixed(2)} weeks credit` : ledger.owedWeeks <= 1e-9 ? 'Paid up' : `$${Math.round(ledger.owedWeeks * cash).toLocaleString()} or ${(ledger.owedWeeks * items).toFixed(2)} ${SETTINGS.taxItemName}${visible.includes(current) ? ' (includes this week)' : ''}`);
+      const balanceCell = cell(!scanComplete ? 'Unable to confirm' : ledger.creditWeeks > 1e-9 ? `${ledger.creditWeeks.toFixed(2)} weeks credit` : ledger.owedWeeks <= 1e-9 ? 'Paid up' : `$${Math.round(ledger.owedWeeks * cash).toLocaleString()} or ${(ledger.owedWeeks * items).toFixed(2)} ${SETTINGS.taxItemName}${visible.includes(current) ? ' (includes this week)' : ''}`);
+      const adjust = document.createElement('button'); adjust.textContent = 'Write off / adjustments';
+      adjust.style.cssText = 'display:block;margin-top:6px;background:#303a46;color:#eee;border:1px solid #647181;border-radius:5px;padding:5px 8px;cursor:pointer';
+      adjust.addEventListener('click', () => showWriteOffEditor(id, employeeName, ledger, period, cash));
+      balanceCell.append(adjust);
       const last = history.filter(p => !p.excluded && p.timestamp >= period.startUnix * 1000 && p.timestamp <= period.endUnix * 1000).sort((a, b) => b.timestamp - a.timestamp)[0];
       cell(last ? new Date(last.timestamp).toISOString().slice(0, 16).replace('T', ' ') : scanComplete ? 'None' : 'Unknown');
     }
@@ -2010,6 +2038,142 @@
     for (const entry of entries) {
       const p = document.createElement('p'); p.textContent = `${new Date(entry.timestamp).toISOString().slice(0, 16).replace('T', ' ')} UTC — ${entry.type === 'money' ? '$' + entry.amount.toLocaleString() : entry.amount + ' ' + SETTINGS.taxItemName}${entry.excluded ? ' (previously excluded)' : ''}`; detail.append(p);
     }
+    for (const entry of getMemberWriteOffs(id).filter(entry => entry.weekKey === key)) {
+      const p = document.createElement('p'); p.textContent = `Write-off: ${entry.coverage.toFixed(2)} week(s) · ${entry.reason || 'No note'} · recorded ${new Date(entry.createdAt).toISOString().slice(0,10)}. This is an adjustment, not a received payment.`; detail.append(p);
+    }
+  }
+
+  function getMemberWriteOffs(id) {
+    const entries = SETTINGS.writeOffs && SETTINGS.writeOffs[id];
+    return Array.isArray(entries) ? entries : [];
+  }
+
+  function planWriteOff(weeks, amount, cashRate, fromWeek) {
+    if (!Number.isFinite(amount) || amount <= 0 || !Number.isFinite(cashRate) || cashRate <= 0) throw new Error('Enter a positive cash amount.');
+    let remaining = amount / cashRate;
+    const plan = [];
+    for (const week of weeks) {
+      if (compareWeekKeys(week.key, fromWeek) < 0) continue;
+      const coverage = Math.min(Math.max(0, 1 - week.coverage), remaining);
+      if (coverage > 1e-9) { plan.push({weekKey:week.key,coverage}); remaining -= coverage; }
+    }
+    if (remaining > 1e-8) throw new Error('That amount exceeds the unpaid tax from the chosen week onward.');
+    return plan;
+  }
+
+  function showWriteOffEditor(id, name, ledger, period, cashRate) {
+    if (document.getElementById('tax-write-off')) return;
+    const dialog = document.createElement('dialog'); dialog.id = 'tax-write-off';
+    dialog.style.cssText = 'position:fixed;inset:16px;margin:auto;width:480px;max-width:calc(100vw - 32px);max-height:calc(100dvh - 32px);overflow:auto;padding:24px;background:#1c2128;color:#eee;border:1px solid #596778;border-radius:12px;font:14px/1.5 system-ui';
+    dialog.setAttribute('aria-labelledby','tax-write-off-title');
+    dialog.innerHTML = `<style>
+      #tax-write-off, #tax-write-off label, #tax-write-off p, #tax-write-off h2, #tax-write-off h3 {color:#eef2f6 !important;font-family:system-ui !important;}
+      #tax-write-off input, #tax-write-off select {color:#fff !important;background:#141a21 !important;border:1px solid #718096 !important;border-radius:6px;box-sizing:border-box;font:14px system-ui;}
+      #tax-write-off button {color:#fff !important;background:#303a46 !important;border:1px solid #718096 !important;border-radius:6px;font:13px system-ui;cursor:pointer;}
+      #tax-write-off #write-off-save {background:#28784f !important;}
+      #tax-write-off::backdrop {background:#0008;}
+    </style><h2 id="tax-write-off-title" style="margin-top:0;color:white">Write off tax</h2><p id="tax-write-off-person"></p>
+      <p>Reduces the selected person's obligation. It does not record a payment or create credit. Saved against specific weeks.</p>
+      <label>Apply from week <select id="write-off-week" style="display:block;width:100%;margin:6px 0 14px;padding:9px;background:#141a21;color:white;border:1px solid #718096"></select></label>
+      <label>Amount to write off ($)<input id="write-off-amount" type="number" min="1" step="1" style="display:block;box-sizing:border-box;width:100%;margin:6px 0;padding:9px;background:#141a21;color:white;border:1px solid #718096"></label>
+      <button type="button" id="write-off-free-week" style="margin:6px 0 14px;padding:8px;color:white;background:#303a46;border:1px solid #718096">Use one free week</button>
+      <label>Note<input id="write-off-note" maxlength="200" placeholder="e.g. Free week agreed" style="display:block;box-sizing:border-box;width:100%;margin:6px 0 14px;padding:9px;background:#141a21;color:white;border:1px solid #718096"></label>
+      <p id="write-off-error" role="alert" style="color:#ffb3b3"></p>
+      <button type="button" id="write-off-save" style="padding:9px 14px;background:#28784f;color:white;border:1px solid #419d70;border-radius:6px">Save write-off</button>
+      <button type="button" id="write-off-cancel" style="padding:9px 14px;background:#303a46;color:white;border:1px solid #718096;border-radius:6px">Close</button>
+      <h3 style="color:white">Saved adjustments</h3><div id="write-off-list"></div>`;
+    dialog.querySelector('#tax-write-off-person').textContent = name;
+    const select = dialog.querySelector('#write-off-week');
+    for (const week of ledger.weeks) { const option = document.createElement('option'); option.value=week.key; option.textContent=formatWeekHeader(week.key).fullStartLabel; select.append(option); }
+    select.value = ledger.weeks.find(week => week.coverage < 1 - 1e-9)?.key || period.weeks[0];
+    dialog.querySelector('#write-off-free-week').onclick = () => { dialog.querySelector('#write-off-amount').value = cashRate; dialog.querySelector('#write-off-note').value = 'Free week'; };
+    dialog.querySelector('#write-off-cancel').onclick = () => dialog.close();
+    dialog.addEventListener('close', () => dialog.remove());
+    dialog.querySelector('#write-off-save').onclick = () => {
+      const error = dialog.querySelector('#write-off-error');
+      if (fetching || !scanComplete) { error.textContent='Finish a complete payment refresh before writing off tax.'; return; }
+      try {
+        const input = dialog.querySelector('#write-off-amount');
+        if (!input.checkValidity()) { input.reportValidity(); return; }
+        const plan = planWriteOff(ledger.weeks,Number(input.value),cashRate,select.value);
+        const createdAt=Date.now(), reason=dialog.querySelector('#write-off-note').value.trim();
+        const previous = SETTINGS.writeOffs;
+        SETTINGS.writeOffs = {...previous, [id]:getMemberWriteOffs(id).concat(plan.map(entry=>({...entry,id:crypto.randomUUID(),createdAt,reason,cashRateAtCreation:cashRate})))};
+        try { saveSettings(SETTINGS); } catch (err) { SETTINGS.writeOffs=previous; throw err; }
+        dialog.close(); renderOverview(lastWeeklyDataCache,lastEmployeesCache);
+      } catch(err) { error.textContent=err.message; }
+    };
+    const list=dialog.querySelector('#write-off-list');
+    for (const entry of getMemberWriteOffs(id)) {
+      const row=document.createElement('p'); row.textContent=`${formatWeekHeader(entry.weekKey).startLabel}: ${entry.coverage.toFixed(2)} week(s) — ${entry.reason || 'No note'} `;
+      const undo=document.createElement('button'); undo.textContent='Undo'; undo.style.cssText='padding:5px 9px;background:#303a46;color:white;border:1px solid #718096';
+      undo.onclick=()=>{
+        if(fetching) {dialog.querySelector('#write-off-error').textContent='Wait for the refresh to finish.';return;}
+        const previous=SETTINGS.writeOffs;
+        SETTINGS.writeOffs={...previous,[id]:getMemberWriteOffs(id).filter(saved=>saved.id!==entry.id)};
+        try {saveSettings(SETTINGS);} catch(err) {SETTINGS.writeOffs=previous;dialog.querySelector('#write-off-error').textContent=err.message;return;}
+        dialog.close();renderOverview(lastWeeklyDataCache,lastEmployeesCache);
+      };
+      row.append(undo);list.append(row);
+    }
+    if(!list.children.length) list.textContent='No adjustments saved.';
+    document.body.append(dialog); dialog.showModal();
+  }
+
+  function buildPaymentReminder(id, name, owedWeeks, cashRate, itemRate, itemName, period) {
+    const cash = Math.ceil(owedWeeks * cashRate - 1e-8);
+    const items = (owedWeeks * itemRate).toFixed(2).replace(/\.00$/,'');
+    const start = new Date(period.startUnix * 1000).toISOString().slice(0,10);
+    const end = new Date(period.endUnix * 1000).toISOString().slice(0,10);
+    return {recipient:String(id), name, createdAt:Date.now(), title:'Friendly company tax reminder',
+      body:`Hi ${name},\n\nHope you're doing well! Just a friendly reminder that the tracker currently shows $${cash.toLocaleString()} outstanding for ${start} to ${end} (including the current week if shown). That's approximately ${items} ${itemName}, or a mix of cash and items at our agreed weekly rate.\n\nWhen you get a chance, could you please catch up? If you've already paid or something looks wrong, let me know and I'll check it.\n\nThanks!`};
+  }
+
+  function installPaymentReminderDraft() {
+    if (reminderDraftTimer) clearInterval(reminderDraftTimer);
+    document.getElementById('tax-reminder-preview')?.remove();
+    if (location.pathname !== '/messages.php') return;
+    const route = new URLSearchParams(location.hash.replace(/^#\/?/,''));
+    const token = new URLSearchParams(location.search).get('taxDraft') || route.get('taxDraft');
+    if (route.get('p') !== 'compose' || !/^[a-f0-9-]{36}$/i.test(token || '')) return;
+    let draft;
+    try { draft = JSON.parse(localStorage.getItem('torn_tax_message_' + token)); } catch { return; }
+    if (!draft || draft.recipient !== route.get('XID') || typeof draft.body !== 'string' || typeof draft.title !== 'string' || !Number.isFinite(draft.createdAt) || Date.now() - draft.createdAt > 30 * 60 * 1000) return;
+    const preview = document.createElement('section'); preview.id = 'tax-reminder-preview';
+    preview.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:2147483647;width:360px;max-width:calc(100vw - 32px);max-height:45vh;overflow:auto;box-sizing:border-box;padding:16px;background:#1c2128;color:white;border:1px solid #718096;border-radius:10px;font:13px/1.5 system-ui;box-shadow:0 8px 30px #0008';
+    const title=document.createElement('strong');title.textContent=`Tax reminder for ${draft.name} [${draft.recipient}]`;preview.append(title);
+    const status=document.createElement('p');status.textContent='Waiting for Torn’s composer. Review the recipient and text before sending.';preview.append(status);
+    const subject=document.createElement('p');subject.textContent='Subject: '+draft.title;preview.append(subject);
+    const text=document.createElement('textarea');text.value=draft.body;text.readOnly=true;text.style.cssText='width:100%;box-sizing:border-box;min-height:110px;background:#141a21;color:white;padding:8px;border:1px solid #718096';preview.append(text);
+    const copy=document.createElement('button');copy.textContent='Copy reminder';copy.style.cssText='padding:7px 10px;background:#303a46;color:white;border:1px solid #718096;border-radius:5px';
+    copy.onclick=async()=>{try{await navigator.clipboard.writeText(draft.body);status.textContent='Reminder copied. Paste it into Torn’s message editor.';}catch{text.focus();text.select();status.textContent='Press Ctrl+C to copy the selected reminder.';}};preview.append(copy);
+    const close=document.createElement('button');close.textContent='Close preview';close.style.cssText=copy.style.cssText+';margin-left:8px';close.onclick=()=>{clearInterval(reminderDraftTimer);preview.remove();};preview.append(close);
+    document.body.append(preview);
+    let attempts=0;
+    const fill = () => {
+      const currentRoute = new URLSearchParams(location.hash.replace(/^#\/?/,''));
+      if (currentRoute.get('p') !== 'compose' || currentRoute.get('XID') !== draft.recipient || ++attempts > 40) {
+        clearInterval(reminderDraftTimer);status.textContent='Use Copy reminder if Torn’s editor could not be filled.';return;
+      }
+      const root=document.querySelector('form#editor-form') || document;
+      const visible=selector=>[...root.querySelectorAll(selector)].find(el=>el.getClientRects().length && !preview.contains(el));
+      const subject=visible('input.subject, input[name="subject"], input[placeholder*="subject" i]');
+      const body=visible('[id^="mce_"][contenteditable="true"], [contenteditable="true"][role="textbox"], textarea[name="message"]');
+      if (!subject || !body) return;
+      const currentBody=(body.value ?? body.innerText ?? body.textContent ?? '').trim();
+      if ((subject.value.trim() && subject.value !== draft.title) || (currentBody && currentBody !== draft.body.trim())) {
+        clearInterval(reminderDraftTimer);status.textContent='Existing message text was kept. Use Copy reminder if you want to replace it.';return;
+      }
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(subject,draft.title);
+      subject.dispatchEvent(new Event('input',{bubbles:true}));subject.dispatchEvent(new Event('change',{bubbles:true}));
+      const richEditor=window.tinymce?.get?.(body.id);
+      if (richEditor) {richEditor.setContent(escapeHtml(draft.body).replace(/\n/g,'<br>'));richEditor.fire('change');richEditor.save();}
+      else if (body.tagName==='TEXTAREA') Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(body,draft.body);
+      else {body.textContent=draft.body;body.style.whiteSpace='pre-wrap';}
+      body.dispatchEvent(new Event('input',{bubbles:true}));body.dispatchEvent(new Event('change',{bubbles:true}));
+      clearInterval(reminderDraftTimer);status.textContent='Reminder filled. Check the recipient and wording, then send it yourself in Torn.';
+    };
+    reminderDraftTimer=setInterval(fill,500);fill();
   }
 
   function renderPaymentHistory(paymentHistory, COMPANY_MEMBERS) {

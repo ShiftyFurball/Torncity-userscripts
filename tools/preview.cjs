@@ -4,7 +4,11 @@ require('node:http').createServer((req,res) => {
   const source = fs.readFileSync('torn-tax-tracker.user.js', 'utf8');
   const html = `<!doctype html><meta charset="utf-8"><title>Staff payments preview</title>
 <style>td,th {color:black !important;background:#1b1b1b !important;}</style>
-<body style="background:#111;color:white;font:16px system-ui;min-height:300vh"><header style="position:fixed;top:0;left:0;right:0;height:140px;background:#263648;z-index:2147483647">Simulated Torn sticky search header</header><p>Staff payments preview · mocked Torn API · hostile table colours</p><script>
+<body style="background:#111;color:white;font:16px system-ui;min-height:300vh"><header style="position:fixed;top:0;left:0;right:0;height:140px;background:#263648;z-index:2147483647">Simulated Torn sticky search header</header><p>Staff payments preview · mocked Torn API · hostile table colours</p>
+${req.url.startsWith('/messages.php') ? `<form id="editor-form" style="position:relative;margin:160px 20px 0"><p>MOCK composer · recipient Alice [101] · nothing is sent</p><input class="subject" name="subject" placeholder="Subject" style="width:600px"><textarea name="message" style="display:block;width:600px;height:200px"></textarea></form><script>
+localStorage.setItem('torn_tax_message_11111111-1111-4111-8111-111111111111',JSON.stringify({recipient:'101',name:'Alice',createdAt:Date.now(),title:'Friendly company tax reminder',body:'Hi Alice,\\n\\nJust a friendly reminder that $37,500,000 or 35 Xanax is currently outstanding. Thanks!'}));
+if(location.search.includes('existing')){document.querySelector('input.subject').value='My subject';document.querySelector('textarea[name=message]').value='My existing draft';}
+</script>` : ''}<script>
 const now = new Date(); const sunday = new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),now.getUTCDate()-now.getUTCDay()));
 const thursday = new Date(sunday.getTime()+86400000); const shifted = new Date(sunday.getTime()+86400000); const day=shifted.getUTCDay()||7;shifted.setUTCDate(shifted.getUTCDate()+4-day);const year=shifted.getUTCFullYear();const week=Math.ceil(((shifted-new Date(Date.UTC(year,0,1)))/86400000+1)/7);
 localStorage.setItem('torn_tax_settings_v5_default',JSON.stringify({apiKey:'preview-only-not-a-key',testMode:false,startYear:year,startWeek:week,defaultMoneyTax:10000000,defaultItemTax:7}));
