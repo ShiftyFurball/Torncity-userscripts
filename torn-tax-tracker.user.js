@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      8.0.0-beta.6
+// @version      8.0.0-beta.7
 // @description  Simple eight-week staff payment checklist. Cash and items count together; older unpaid weeks remain recorded.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -1021,12 +1021,13 @@
         <p id="simple-rate-preview" aria-live="polite"></p>
         <span class="tax-setting-help">Staff can pay in cash, items, or a mix of both.</span>
       </section>
-      <details><summary>Tracking period and backup</summary>
-        <p>Tax is calculated from the week below, or the employee’s join week if later. Earlier weeks are not charged. The table shows up to eight recent weeks; older unpaid tax remains included in the balance.</p>
+      <section class="tax-setting-section"><h3>Calculate from Tax Period</h3>
         <div class="tax-setting-grid">
-          <label>Calculate tax from year<input id="simple-year" type="number" min="2000" max="2100"></label>
-          <label>Calculate tax from week<input id="simple-week" type="number" min="1" max="53"></label>
+          <label>Start year<input id="simple-year" type="number" min="2000" max="2100"></label>
+          <label>Start week<input id="simple-week" type="number" min="1" max="53"></label>
         </div>
+      </section>
+      <details><summary>Advanced and backup</summary>
         <label style="margin-top:14px !important">Payment search limit (API pages)<input id="simple-pages" type="number" min="1" max="100" aria-describedby="simple-pages-help"></label>
         <span class="tax-setting-help" id="simple-pages-help">Maximum batches of payment records fetched for each receipt type. Each page contains up to 100 logs. This limits loading time, not the number of weeks calculated. Increase it only if the tracker reports incomplete payment history.</span>
         <p>Changing rates recalculates the tracked period. Per-member overrides and carrybacks are preserved but not applied in this view.</p>
