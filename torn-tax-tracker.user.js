@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      8.0.0-beta.14
+// @version      8.0.0-beta.15
 // @description  Cached staff payment tracking for an adjustable period, with cash/item payments checked against previous arrears before future credit.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -25,7 +25,7 @@
   const MILLIS_PER_DAY = 86400000;
   const MILLIS_PER_WEEK = 7 * MILLIS_PER_DAY;
   let apiRequestQueue = Promise.resolve();
-  let nextApiRequestAt = 0;
+  let recentApiRequests = [];
   let apiCooldownUntil = 0;
 
   const DEFAULT_SETTINGS = {
@@ -1456,7 +1456,7 @@
         <dt style="font-weight:600">Key storage</dt><dd style="margin:0 0 7px">The key is stored locally, not encrypted, and sent to Torn over HTTPS. It is excluded from settings backups. Cached data is not isolated from other scripts running on the same Torn origin.</dd>
         <dt style="font-weight:600">Required access</dt><dd style="margin:0">Full Access, or a custom key permitting company/employees, user/log for the relevant incoming cash/item types, and torn/items and torn/logtypes.</dd>
       </dl>
-      <span>Requests are paced to about 54/minute across this script’s cooperating tabs. Other tools and browsers still share Torn’s account limit.</span>
+      <span>Requests can load in short bursts, limited to 10 per 10 seconds and 60 per minute across this script’s cooperating tabs. Other tools and browsers still share Torn’s account limit.</span>
       <a href="https://www.torn.com/api.html" target="_blank" rel="noopener noreferrer" style="color:#91caff">Torn API guidelines</a>
     </div>`;
   }
@@ -1485,15 +1485,21 @@
 
   function waitForApiSlot() {
     const reserve = async () => {
-      const now = Date.now(), saved = readApiSchedule();
-      const cooldown = Math.max(apiCooldownUntil, Number(saved.cooldownUntil) || 0);
-      if (cooldown > now) { const error = new Error(`API requests are paused. Try again in ${Math.ceil((cooldown - now) / 1000)} seconds.`); error.apiCooldown = true; throw error; }
-      const slot = Math.max(now, nextApiRequestAt, Math.min(Number(saved.nextAt) || 0, now + 60000));
-      nextApiRequestAt = slot + 1100;
-      try { localStorage.setItem('torn_tax_api_schedule_v1', JSON.stringify({nextAt:nextApiRequestAt,cooldownUntil:cooldown})); } catch { /* Fall back to pacing this tab. */ }
-      if (slot > now) await delay(slot - now);
-      const latestCooldown = Math.max(apiCooldownUntil, Number(readApiSchedule().cooldownUntil) || 0);
-      if (latestCooldown > Date.now()) {const error = new Error('API requests paused after a rate-limit response. Refresh later.');error.apiCooldown=true;throw error;}
+      while (true) {
+        const now = Date.now(), saved = readApiSchedule();
+        const cooldown = Math.max(apiCooldownUntil, Number(saved.cooldownUntil) || 0);
+        if (cooldown > now) { const error = new Error(`API requests are paused. Try again in ${Math.ceil((cooldown - now) / 1000)} seconds.`); error.apiCooldown = true; throw error; }
+        const valid = timestamp => Number.isFinite(timestamp) && timestamp > now - 60000 && timestamp <= now;
+        const shared = (Array.isArray(saved.requests) ? saved.requests : []).filter(valid).sort((a,b)=>a-b);
+        const local = recentApiRequests.filter(valid);
+        const recent = local.length > shared.length ? local : shared;
+        const burst = recent.filter(timestamp => timestamp > now - 10000);
+        const wait = Math.max(recent.length >= 60 ? recent[recent.length - 60] + 60001 - now : 0, burst.length >= 10 ? burst[burst.length - 10] + 10001 - now : 0);
+        if (wait > 0) { await delay(wait); continue; }
+        recentApiRequests = recent.concat(now);
+        try { localStorage.setItem('torn_tax_api_schedule_v1', JSON.stringify({requests:recentApiRequests,cooldownUntil:cooldown})); } catch { /* Keep a local request budget if storage is unavailable. */ }
+        return;
+      }
     };
     const task = apiRequestQueue.then(() => navigator.locks?.request ? navigator.locks.request('torn-tax-api-request', reserve) : reserve());
     apiRequestQueue = task.catch(() => {});

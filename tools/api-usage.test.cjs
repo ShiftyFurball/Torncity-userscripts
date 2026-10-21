@@ -21,8 +21,14 @@ vm.runInContext(extract('retireApiKey')+'\n'+extract('tornFetch'),ctx);
   const previous=calls;await assert.rejects(ctx.tornFetch('user/',{}),/paused/);assert.equal(calls,previous+1,'rate limits are not retried immediately');
   assert(slots===calls,'every request uses the scheduler');
   const schedule=vm.createContext({Date:class extends Date{static now(){return now;}},navigator:{},localStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v)},delay:async ms=>{now+=ms;}});
-  vm.runInContext('let apiRequestQueue=Promise.resolve(),nextApiRequestAt=0,apiCooldownUntil=0;'+['readApiSchedule','setApiCooldown','waitForApiSlot'].map(extract).join('\n'),schedule);
-  await schedule.waitForApiSlot();const first=now;await schedule.waitForApiSlot();assert(now-first>=1100);
+  vm.runInContext('let apiRequestQueue=Promise.resolve(),recentApiRequests=[],apiCooldownUntil=0;'+['readApiSchedule','setApiCooldown','waitForApiSlot'].map(extract).join('\n'),schedule);
+  const first=now;
+  for(let i=0;i<10;i++)await schedule.waitForApiSlot();
+  assert.equal(now,first,'first ten requests have no artificial per-request delay');
+  await schedule.waitForApiSlot();assert(now-first>=10000,'eleventh request respects the burst budget');
+  const issued=[];
+  for(let i=0;i<80;i++){await schedule.waitForApiSlot();issued.push(now);}
+  for(const timestamp of issued) assert(issued.filter(t=>t<=timestamp&&t>timestamp-60000).length<=60,'rolling minute budget must be enforced');
   schedule.setApiCooldown(60000);await assert.rejects(schedule.waitForApiSlot(),/paused/);
   now+=60000;await schedule.waitForApiSlot();
   const disclosure=vm.runInNewContext(extract('apiUsageDisclosure')+'\napiUsageDisclosure()');

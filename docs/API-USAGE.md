@@ -12,7 +12,7 @@ This disclosure applies to the staff payment tracker beta. It is displayed besid
 
 ## Requests and errors
 
-All API requests, including retries, item lookups and employee lookups, pass through one scheduler. This script spaces requests at least 1.1 seconds apart (about 54/minute). Scheduling information is shared in localStorage and coordinated through Web Locks where supported. Without shared browser storage/locks it falls back to local tab pacing. Other scripts, devices and browsers still consume the same account-wide Torn quota; this scheduler cannot reserve their quota.
+All API requests, including retries, item lookups and employee lookups, pass through one scheduler. This script allows immediate bursts of up to 10 requests per rolling 10 seconds, with a separate limit of 60 requests per rolling minute. There is no artificial delay between requests while both budgets have room. Scheduling information is shared in localStorage and coordinated through Web Locks where supported. Without shared browser storage/locks it falls back to local tab pacing. Other scripts, devices and browsers still consume the same account-wide Torn quota; this scheduler cannot reserve their quota.
 
 HTTP 429 and Torn errors 5/8 pause further requests for at least 60 seconds, using a longer numeric Retry-After value where supplied. The active refresh stops; it does not rapidly retry a rate-limit or temporary IP block. Some transient service/network failures have bounded retries, with each attempt passing through the scheduler.
 

@@ -1,6 +1,6 @@
 # Torncity Userscripts
 
-Torn staff payment tracker, beta 8.0.0-beta.14.
+Torn staff payment tracker, beta 8.0.0-beta.15.
 
 See [API usage and privacy](docs/API-USAGE.md) for the disclosure shown at both key-entry fields, required access, local storage/sharing details, request pacing, rate-limit handling and invalid-key removal. The document also provides ready-to-paste Greasy Fork disclosure text.
 
