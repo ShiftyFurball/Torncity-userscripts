@@ -6,7 +6,7 @@ Small collection repo for Torn userscripts.
 
 The beta now calculates all obligations and receipts from 1 January of the current UTC year through today. Employees joining later are charged from their join week. The first calendar week containing 1 January counts as a week, but receipts before 1 January are excluded. Prior-year arrears/credit are not imported. Cash and the configured item combine at the current weekly rates; historical rate changes are not modelled.
 
-Bulk payments clear the oldest unpaid YTD weeks first. Only the excess after all YTD obligations are covered becomes credit. The visible table shows six weeks at a time with Previous, Next and Latest navigation; changing the visible block never changes the YTD balance. Click a week for actual receipt dates and amounts. An unpaid historical week can later become covered by a bulk payment.
+Bulk payments clear the oldest unpaid YTD weeks first. Only the excess after all YTD obligations are covered becomes credit. The visible table shows only the most recent six weeks; earlier YTD weeks still count toward the balance. Click a week for actual receipt dates and amounts. An unpaid historical week can later become covered by a bulk payment.
 
 The former manual calculation start is superseded by YTD in this beta. Existing settings are retained, and Settings displays the automatic current tax year/first calendar week. A full-year history scan must complete before outstanding amounts can be confirmed.
 

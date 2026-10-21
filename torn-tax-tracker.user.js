@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      8.0.0-beta.8
+// @version      8.0.0-beta.9
 // @description  Year-to-date staff payment tracking with six-week views. Cash and items count together; bulk payments clear oldest arrears first.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -439,7 +439,6 @@
     sanitizeSettingsInPlace();
   }
 
-  let blockOffset = 0;
   let scanComplete = false;
   let fetching = false;
   let lastEmployeesCache = {};
@@ -1501,12 +1500,6 @@
     return {year, fromUnix: januaryFirst.getTime() / 1000, weeks, currentWeek};
   }
 
-  function getSixWeekBlock(weeks, offset) {
-    const lastOffset = Math.max(0, Math.ceil(weeks.length / 6) - 1);
-    const safeOffset = Math.min(lastOffset, Math.max(0, offset));
-    const end = weeks.length - safeOffset * 6;
-    return {visible: weeks.slice(Math.max(0, end - 6), end), offset: safeOffset, hasPrevious: safeOffset < lastOffset, hasNext: safeOffset > 0};
-  }
 
   function generateRecentWeekKeys(count) {
     const keys = [];
@@ -1869,9 +1862,7 @@
     const period = getYtdPeriod();
     const all = period.weeks;
     const current = period.currentWeek;
-    const block = getSixWeekBlock(all, blockOffset);
-    blockOffset = block.offset;
-    const visible = block.visible;
+    const visible = all.slice(-6);
     const cash = Number(SETTINGS.defaultMoneyTax) || 10000000;
     const items = Number(SETTINGS.defaultItemTax) || 7;
     overviewView.innerHTML = `<style>
@@ -1879,12 +1870,8 @@
       #tax-panel #simple-details, #tax-panel #simple-details p, #tax-panel #simple-details h3 {color:#eee !important;background:#1b1b1b !important;}
       #tax-panel #simple-grid th {color:#bfcbd8 !important;font-weight:600;}
       #tax-panel #simple-grid button {font:inherit !important;}
-      #tax-panel .tax-block-controls {display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:12px 0;color:#eee;}
-      #tax-panel .tax-block-controls button {padding:7px 10px;border:1px solid #667383;border-radius:6px;background:#303a46;color:#fff;cursor:pointer;font:inherit;}
-      #tax-panel .tax-block-controls button:disabled {opacity:.4;cursor:default;}
     </style><p>Each week: $${cash.toLocaleString()} or ${items} ${escapeHtml(SETTINGS.taxItemName)} — cash and items can be combined.</p>
       <p>Calculating from 1 January ${period.year} to today (UTC). Bulk payments cover oldest unpaid weeks first. The balance includes the whole year, regardless of the six weeks displayed. The first calendar week is included even if it starts in December; only receipts from January onward count.</p>
-      <div class="tax-block-controls"><button type="button" id="tax-block-previous" ${block.hasPrevious ? '' : 'disabled'}>← Previous 6 weeks</button><span>${escapeHtml(formatWeekHeader(visible[0]).fullStartLabel)} – ${escapeHtml(formatWeekHeader(visible[visible.length - 1]).fullStartLabel)} (week starts)</span><button type="button" id="tax-block-next" ${block.hasNext ? '' : 'disabled'}>Next 6 weeks →</button><button type="button" id="tax-block-latest" ${block.hasNext ? '' : 'disabled'}>Latest</button></div>
       <label><input type="checkbox" id="simple-unpaid"> Show staff with outstanding payments only</label>
       <div style="overflow:auto;margin-top:12px"><table id="simple-grid" style="width:100%;border-collapse:collapse;white-space:nowrap"><thead></thead><tbody></tbody></table></div><div id="simple-details" style="margin-top:16px"></div>`;
     const table = overviewView.querySelector('table');
@@ -1917,12 +1904,6 @@
     overviewView.querySelector('#simple-unpaid').addEventListener('change', event => {
       for (const row of table.querySelectorAll('tbody tr')) row.hidden = event.target.checked && row.dataset.owing === 'false';
     });
-    for (const [id, offset] of [['previous', blockOffset + 1], ['next', blockOffset - 1], ['latest', 0]]) {
-      overviewView.querySelector('#tax-block-' + id).addEventListener('click', () => {
-        blockOffset = offset;
-        renderOverview(lastWeeklyDataCache, lastEmployeesCache);
-      });
-    }
   }
 
   function showSimplePayments(id, key, employees) {
