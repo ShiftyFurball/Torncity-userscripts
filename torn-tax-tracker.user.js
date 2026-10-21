@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      8.0.0-beta.13
+// @version      8.0.0-beta.14
 // @description  Cached staff payment tracking for an adjustable period, with cash/item payments checked against previous arrears before future credit.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -24,6 +24,9 @@
   const ROLLING_WINDOW_WEEKS = 8;
   const MILLIS_PER_DAY = 86400000;
   const MILLIS_PER_WEEK = 7 * MILLIS_PER_DAY;
+  let apiRequestQueue = Promise.resolve();
+  let nextApiRequestAt = 0;
+  let apiCooldownUntil = 0;
 
   const DEFAULT_SETTINGS = {
     startYear: new Date().getUTCFullYear(),
@@ -294,8 +297,7 @@
       return ITEM_CATALOG;
     }
     try {
-      const res = await fetch(`https://api.torn.com/torn/?selections=items&key=${encodeURIComponent(SETTINGS.apiKey)}`);
-      const data = await res.json();
+      const data = await tornFetch('torn/', {selections:'items'});
       if (!data || data.error || !data.items || typeof data.items !== 'object') {
         if (!ITEM_CATALOG.timestamp || (now - ITEM_CATALOG.timestamp) >= ITEM_CATALOG_MAX_AGE) {
           ITEM_CATALOG.timestamp = now;
@@ -333,6 +335,7 @@
       ITEM_CATALOG = ensureCatalogShape({ timestamp: now, byName, byId });
       saveItemCatalog(ITEM_CATALOG);
     } catch (err) {
+      if (err.apiAuthFailure || err.apiCooldown) throw err;
       console.warn('Failed to fetch item catalog', err);
     }
     return ITEM_CATALOG;
@@ -362,6 +365,10 @@
   }
   saveProfileMeta(PROFILE_META);
   let SETTINGS = loadSettings(ACTIVE_PROFILE_ID);
+  window.addEventListener('storage', event => {
+    if (event.key !== getSettingsStorageKey(ACTIVE_PROFILE_ID)) return;
+    try { if (JSON.parse(event.newValue || '{}').apiKey === '') SETTINGS.apiKey = ''; } catch { /* Ignore malformed unrelated updates. */ }
+  });
 
   function ensureSettingsShapeInPlace() {
     // Migrate legacy saves that only had a single required tax amount
@@ -955,6 +962,7 @@
       <h3 style="margin:0 0 10px 0;">Enter Torn API Key</h3>
       <p>Full Access API key required for cash payment logs. A custom key with access to the required cash/item logs also works. Limited Access cannot read these logs.</p>
       <p>Your key is stored in this browser and sent only to Torn's API.</p>
+      ${apiUsageDisclosure()}
       <input id="apiInput" type="password" autocomplete="off" style="width:100%;box-sizing:border-box;padding:6px;background:#111;color:#eee;border:1px solid #555;">
       <div style="text-align:right;margin-top:10px;">
         <button id="saveApi" style="background:#2e8b57;color:white;padding:5px 10px;border:none;border-radius:4px;cursor:pointer;">Save</button>
@@ -1015,6 +1023,7 @@
         <div class="tax-key-note"><strong>Full Access required for cash logs.</strong><br>A custom key with the required log permissions also works. Limited Access cannot read these logs.</div>
         <label for="simple-key">API key</label><input id="simple-key" type="password" autocomplete="off" spellcheck="false" aria-describedby="simple-key-help">
         <span class="tax-setting-help" id="simple-key-help">Stored in this browser. Sent only to Torn’s API.</span>
+        ${apiUsageDisclosure()}
       </section>
       <section class="tax-setting-section"><h3>Weekly payment</h3>
         <div class="tax-setting-grid">
@@ -1197,8 +1206,7 @@
           employees = normalizeEmployeeMap(SETTINGS.manualMembers);
           SETTINGS.manualMembers = employees;
         } else {
-          const res = await fetch(`https://api.torn.com/company/?selections=employees&key=${encodeURIComponent(SETTINGS.apiKey)}`);
-          const data = await res.json();
+          const data = await tornFetch('company/', {selections:'employees'});
           if (data && data.error) {
             throw new Error(`Torn API error (${data.error.code}): ${data.error.error}`);
           }
@@ -1381,12 +1389,21 @@
         query.set(key, value);
       }
     });
-    query.set("key", SETTINGS.apiKey);
+    const requestKey = SETTINGS.apiKey;
+    query.set("key", requestKey);
 
     let lastError = null;
     for (let attempt = 1; attempt <= 4; attempt += 1) {
       try {
+        await waitForApiSlot();
+        if (!SETTINGS.apiKey || SETTINGS.apiKey !== requestKey) throw new Error('API key changed or was disabled. Open Settings before refreshing.');
         const res = await fetch(`https://api.torn.com/${endpoint}?${query.toString()}`);
+        if (res.status === 429) {
+          const retryAfter = Number(res.headers?.get('Retry-After'));
+          setApiCooldown(Math.max(60000, Number.isFinite(retryAfter) ? retryAfter * 1000 : 60000));
+          const error = new Error('Torn API rate limit reached. Requests are paused for at least 60 seconds; refresh later. Other tools share your account limit.');
+          error.apiCooldown = true; throw error;
+        }
         const text = await res.text();
         let data;
         try {
@@ -1397,7 +1414,17 @@
         if (data && data.error) {
           const code = Number(data.error.code);
           const message = code === 16 ? 'Full Access API key required for cash/item payment logs (or a custom key with the required log permissions). Update the key in Settings.' : String(data.error.error || "Unknown Torn API error");
-          if ([5, 8, 9, 12, 15, 17, 24].includes(code) && attempt < 4) {
+          if ([1, 2, 10, 13, 18].includes(code)) {
+            retireApiKey(requestKey);
+            const error = new Error(`Torn API error (${code}): ${message}. The saved key has been removed from use. Add a valid, enabled key in Settings.`);
+            error.apiAuthFailure = true; throw error;
+          }
+          if ([5, 8].includes(code)) {
+            setApiCooldown(60000);
+            const error = new Error(`Torn API error (${code}): ${message}. Requests are paused for at least 60 seconds; refresh later.`);
+            error.apiCooldown = true; throw error;
+          }
+          if ([9, 12, 15, 17, 24].includes(code) && attempt < 4) {
             await delay(retryDelayMs(attempt));
             continue;
           }
@@ -1409,7 +1436,7 @@
         return data || {};
       } catch (error) {
         lastError = error;
-        if (attempt < 4 && isRetryableNetworkError(error)) {
+        if (!error.apiAuthFailure && !error.apiCooldown && attempt < 4 && isRetryableNetworkError(error)) {
           await delay(retryDelayMs(attempt));
           continue;
         }
@@ -1417,6 +1444,60 @@
       }
     }
     throw lastError || new Error("Torn API request failed.");
+  }
+
+  function apiUsageDisclosure() {
+    return `<div class="tax-api-disclosure" style="margin:12px 0;padding:12px;border:1px solid #46515d;border-radius:7px;font:12px/1.5 system-ui;color:#dbe5ef;background:#18212b">
+      <strong>API usage &amp; privacy</strong>
+      <dl style="margin:8px 0">
+        <dt style="font-weight:600">Purpose</dt><dd style="margin:0 0 7px">Read company staff and incoming cash/item logs to calculate payments, arrears and reminder drafts.</dd>
+        <dt style="font-weight:600">Storage</dt><dd style="margin:0 0 7px">Key, settings, cached receipts, write-offs and reminder drafts are stored in this browser until cleared. Drafts stop being used after 30 minutes. Uninstalling the userscript does not erase browser storage.</dd>
+        <dt style="font-weight:600">Sharing</dt><dd style="margin:0 0 7px">No uploads to the developer, analytics or third-party services. API requests go directly to api.torn.com. At your request, a reminder is placed in Torn’s message composer; you review and send it yourself.</dd>
+        <dt style="font-weight:600">Key storage</dt><dd style="margin:0 0 7px">The key is stored locally, not encrypted, and sent to Torn over HTTPS. It is excluded from settings backups. Cached data is not isolated from other scripts running on the same Torn origin.</dd>
+        <dt style="font-weight:600">Required access</dt><dd style="margin:0">Full Access, or a custom key permitting company/employees, user/log for the relevant incoming cash/item types, and torn/items and torn/logtypes.</dd>
+      </dl>
+      <span>Requests are paced to about 54/minute across this script’s cooperating tabs. Other tools and browsers still share Torn’s account limit.</span>
+      <a href="https://www.torn.com/api.html" target="_blank" rel="noopener noreferrer" style="color:#91caff">Torn API guidelines</a>
+    </div>`;
+  }
+
+  function retireApiKey(key) {
+    if (SETTINGS.apiKey === key) SETTINGS.apiKey = '';
+    for (const profile of PROFILE_META.knownProfileIds) {
+      try {
+        const storageKey = getSettingsStorageKey(profile);
+        const saved = JSON.parse(localStorage.getItem(storageKey) || '{}');
+        if (saved.apiKey === key) { saved.apiKey = ''; localStorage.setItem(storageKey, JSON.stringify(saved)); }
+      } catch { /* The in-memory key remains disabled if browser storage fails. */ }
+    }
+    try { saveSettings(SETTINGS); } catch { console.warn('Invalid API key disabled in this tab; browser storage could not be updated.'); }
+  }
+
+  function readApiSchedule() {
+    try { return JSON.parse(localStorage.getItem('torn_tax_api_schedule_v1') || '{}') || {}; } catch { return {}; }
+  }
+
+  function setApiCooldown(milliseconds) {
+    apiCooldownUntil = Math.max(apiCooldownUntil, Date.now() + milliseconds);
+    const saved = readApiSchedule();
+    try { localStorage.setItem('torn_tax_api_schedule_v1', JSON.stringify({...saved, cooldownUntil:Math.max(Number(saved.cooldownUntil) || 0, apiCooldownUntil)})); } catch { /* Keep the local cooldown. */ }
+  }
+
+  function waitForApiSlot() {
+    const reserve = async () => {
+      const now = Date.now(), saved = readApiSchedule();
+      const cooldown = Math.max(apiCooldownUntil, Number(saved.cooldownUntil) || 0);
+      if (cooldown > now) { const error = new Error(`API requests are paused. Try again in ${Math.ceil((cooldown - now) / 1000)} seconds.`); error.apiCooldown = true; throw error; }
+      const slot = Math.max(now, nextApiRequestAt, Math.min(Number(saved.nextAt) || 0, now + 60000));
+      nextApiRequestAt = slot + 1100;
+      try { localStorage.setItem('torn_tax_api_schedule_v1', JSON.stringify({nextAt:nextApiRequestAt,cooldownUntil:cooldown})); } catch { /* Fall back to pacing this tab. */ }
+      if (slot > now) await delay(slot - now);
+      const latestCooldown = Math.max(apiCooldownUntil, Number(readApiSchedule().cooldownUntil) || 0);
+      if (latestCooldown > Date.now()) {const error = new Error('API requests paused after a rate-limit response. Refresh later.');error.apiCooldown=true;throw error;}
+    };
+    const task = apiRequestQueue.then(() => navigator.locks?.request ? navigator.locks.request('torn-tax-api-request', reserve) : reserve());
+    apiRequestQueue = task.catch(() => {});
+    return task;
   }
 
   async function fetchAllLogs(logTypes, fromUnix, maxPages) {
@@ -2165,6 +2246,8 @@
     document.body.append(preview);
     let attempts=0;
     const fill = () => {
+      if (Date.now() - draft.createdAt > 30 * 60 * 1000) {clearInterval(reminderDraftTimer);status.textContent='This reminder draft has expired. Create a fresh one from the tracker.';return;}
+      if (document.visibilityState !== 'visible') return;
       const currentRoute = new URLSearchParams(location.hash.replace(/^#\/?/,''));
       if (currentRoute.get('p') !== 'compose' || currentRoute.get('XID') !== draft.recipient || ++attempts > 40) {
         clearInterval(reminderDraftTimer);status.textContent='Use Copy reminder if Torn’s editor could not be filled.';return;

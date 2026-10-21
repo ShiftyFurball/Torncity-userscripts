@@ -1,6 +1,8 @@
 # Torncity Userscripts
 
-Torn staff payment tracker, beta 8.0.0-beta.11.
+Torn staff payment tracker, beta 8.0.0-beta.14.
+
+See [API usage and privacy](docs/API-USAGE.md) for the disclosure shown at both key-entry fields, required access, local storage/sharing details, request pacing, rate-limit handling and invalid-key removal. The document also provides ready-to-paste Greasy Fork disclosure text.
 
 [Install the beta](https://raw.githubusercontent.com/ShiftyFurball/Torncity-userscripts/codex/simple-eight-week-tracker/torn-tax-tracker.user.js)
 
@@ -41,6 +43,7 @@ node --check torn-tax-tracker.user.js
 node tools/payment-ledger.test.cjs
 node tools/log-pagination.test.cjs
 node tools/period-cache.test.cjs
+node tools/api-usage.test.cjs
 node tools/preview.cjs
 ```
 
