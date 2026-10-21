@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      8.0.0-beta.2
+// @version      8.0.0-beta.3
 // @description  Simple eight-week staff payment checklist. Cash and items count together; older unpaid weeks remain recorded.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -727,7 +727,7 @@
     if (!el) {
       return;
     }
-    el.style.zIndex = String(LAYER_Z_INDEX.active);
+    el.style.zIndex = String(el.id === 'tax-panel' ? LAYER_Z_INDEX.panel : LAYER_Z_INDEX.modal);
   }
 
   // Floating open button
@@ -774,6 +774,24 @@
     </div>
   `;
   document.body.appendChild(panel);
+  // The browser top layer keeps the tracker above Torn's sticky header.
+  if (typeof panel.showPopover === 'function') panel.setAttribute('popover', 'manual');
+  Object.assign(panel.style, {margin:'0', right:'auto', bottom:'auto', boxSizing:'border-box', maxWidth:'calc(100vw - 24px)', maxHeight:'calc(100dvh - 24px)'});
+  panel.querySelector('#drag-bar').style.flexShrink = '0';
+  panel.querySelector('#drag-bar').style.flexWrap = 'wrap';
+  panel.querySelector('#tax-status').style.flexShrink = '0';
+  panel.querySelector('#viewContainer').style.overflow = 'hidden';
+  for (const view of panel.querySelectorAll('#overviewView, #paymentsView, #employeeView')) {
+    Object.assign(view.style, {boxSizing:'border-box', overscrollBehavior:'contain'});
+  }
+  function openTracker() {
+    panel.style.display = 'flex';
+    if (panel.hasAttribute('popover') && !panel.matches(':popover-open')) panel.showPopover();
+  }
+  function closeTracker() {
+    if (panel.hasAttribute('popover') && panel.matches(':popover-open')) panel.hidePopover();
+    panel.style.display = 'none';
+  }
 
   const overviewView = panel.querySelector("#overviewView");
   const paymentsView = panel.querySelector("#paymentsView");
@@ -852,7 +870,7 @@
       return;
     }
     bringToFront(panel);
-    panel.style.display = "flex";
+    openTracker();
     fetchData();
   });
   document.addEventListener("keydown", event => {
@@ -868,7 +886,7 @@
     }
     event.preventDefault();
     if (panel.style.display === "flex") {
-      panel.style.display = "none";
+      closeTracker();
       return;
     }
     if (!SETTINGS.apiKey && !SETTINGS.testMode) {
@@ -876,10 +894,10 @@
       return;
     }
     bringToFront(panel);
-    panel.style.display = "flex";
+    openTracker();
     fetchData();
   });
-  panel.querySelector("#close-tax").addEventListener("click", () => panel.style.display = "none");
+  panel.querySelector("#close-tax").addEventListener("click", closeTracker);
   panel.querySelector("#editEmployees").addEventListener("click", () => showEmployeeEditor());
   panel.querySelector("#editSettings").addEventListener("click", () => showSettingsEditor());
   overviewButton.addEventListener("click", () => {
@@ -922,7 +940,9 @@
   switchView("overview");
 
   function showApiPrompt() {
-    const editor = document.createElement("div");
+    if (document.getElementById('tax-api-prompt')) return;
+    const editor = document.createElement("dialog");
+    editor.id = 'tax-api-prompt';
     Object.assign(editor.style, {
       position: "fixed", top: "30%", left: "35%", width: "30%",
       background: "#222", color: "#fff", padding: "15px", zIndex: String(LAYER_Z_INDEX.modal),
@@ -930,27 +950,38 @@
     });
     editor.innerHTML = `
       <h3 style="margin:0 0 10px 0;">Enter Torn API Key</h3>
-      <input id="apiInput" type="text" value="${SETTINGS.apiKey}" style="width:100%;padding:6px;background:#111;color:#0f0;border:1px solid #555;">
+      <p>Full Access API key required for cash payment logs. A custom key with access to the required cash/item logs also works. Limited Access cannot read these logs.</p>
+      <p>Your key is stored in this browser and sent only to Torn's API.</p>
+      <input id="apiInput" type="password" autocomplete="off" style="width:100%;box-sizing:border-box;padding:6px;background:#111;color:#eee;border:1px solid #555;">
       <div style="text-align:right;margin-top:10px;">
         <button id="saveApi" style="background:#2e8b57;color:white;padding:5px 10px;border:none;border-radius:4px;cursor:pointer;">Save</button>
       </div>
     `;
     document.body.appendChild(editor);
-    bringToFront(editor);
+    editor.querySelector('#apiInput').value = SETTINGS.apiKey;
+    Object.assign(editor.style, {margin:'auto', inset:'12px', width:'min(480px, calc(100vw - 48px))', maxHeight:'calc(100dvh - 48px)', overflow:'auto'});
+    editor.addEventListener('close', () => editor.remove());
+    const cancel = document.createElement('button'); cancel.textContent = 'Cancel'; cancel.onclick = () => editor.close(); editor.append(cancel);
+    editor.showModal();
     editor.querySelector("#saveApi").addEventListener("click", () => {
       SETTINGS.apiKey = editor.querySelector("#apiInput").value.trim();
       saveSettings(SETTINGS);
-      editor.remove();
-      panel.style.display = "flex";
+      editor.close();
+      openTracker();
       fetchData();
     });
   }
 
   function showSettingsEditor() {
     if (document.getElementById('simple-tax-settings')) return;
-    const editor = document.createElement('div'); editor.id = 'simple-tax-settings';
+    const editor = document.createElement('dialog'); editor.id = 'simple-tax-settings';
     editor.style.cssText = `position:fixed;inset:10% max(12px,20%);overflow:auto;background:#222;color:white;padding:20px;border:1px solid #777;border-radius:8px;z-index:${LAYER_Z_INDEX.modal};font:14px system-ui`;
+    editor.style.margin = 'auto';
+    editor.style.maxHeight = 'calc(100dvh - 48px)';
+    editor.style.boxSizing = 'border-box';
     editor.innerHTML = `<h2>Payment settings</h2><p>Sunday–Saturday (UTC). Cash and items count together.</p>
+      <p><strong>Full Access API key required for cash payment logs.</strong> A custom key with access to the required cash/item logs also works. Limited Access cannot read these logs.</p>
+      <p>Your key is stored in this browser and sent only to Torn's API.</p>
       <label>API key <input id="simple-key" type="password" autocomplete="off"></label><br><br>
       <label>Cash per week <input id="simple-cash" type="number" min="1" required></label><br><br>
       <label>Items per week <input id="simple-items" type="number" min="1" required></label><br><br>
@@ -963,7 +994,8 @@
       <button id="simple-save">Save and refresh</button> <button id="simple-cancel">Cancel</button>`;
     const fields = {key: SETTINGS.apiKey, cash: SETTINGS.defaultMoneyTax, items: SETTINGS.defaultItemTax, item: SETTINGS.taxItemName, year: SETTINGS.startYear, week: SETTINGS.startWeek, pages: SETTINGS.maxLogPages};
     for (const [id, value] of Object.entries(fields)) editor.querySelector('#simple-' + id).value = value;
-    editor.querySelector('#simple-cancel').onclick = () => editor.remove();
+    editor.querySelector('#simple-cancel').onclick = () => editor.close();
+    editor.addEventListener('close', () => editor.remove());
     editor.querySelector('#simple-backup').onclick = () => {
       const copy = JSON.parse(JSON.stringify(SETTINGS)); delete copy.apiKey;
       const url = URL.createObjectURL(new Blob([JSON.stringify({profile: ACTIVE_PROFILE_ID, settings: copy}, null, 2)], {type:'application/json'}));
@@ -978,9 +1010,10 @@
       SETTINGS.apiKey = value('key'); SETTINGS.defaultMoneyTax = Number(value('cash')); SETTINGS.defaultItemTax = Number(value('items')); SETTINGS.taxItemName = value('item');
       SETTINGS.startYear = Number(value('year')); SETTINGS.startWeek = Number(value('week')); SETTINGS.maxLogPages = Number(value('pages'));
       SETTINGS.testMode = false;
-      saveSettings(SETTINGS); editor.remove(); fetchData(true);
+      saveSettings(SETTINGS); editor.close(); fetchData(true);
     };
     document.body.append(editor);
+    editor.showModal();
   }
 
   function showEmployeeEditor() {
@@ -1282,7 +1315,7 @@
         }
         if (data && data.error) {
           const code = Number(data.error.code);
-          const message = String(data.error.error || "Unknown Torn API error");
+          const message = code === 16 ? 'Full Access API key required for cash/item payment logs (or a custom key with the required log permissions). Update the key in Settings.' : String(data.error.error || "Unknown Torn API error");
           if ([5, 8, 9, 12, 15, 17, 24].includes(code) && attempt < 4) {
             await delay(retryDelayMs(attempt));
             continue;
@@ -1652,6 +1685,7 @@
     let suppressClick = false;
 
     handle.addEventListener('mousedown', e => {
+      if (e.button !== 0 || e.target.closest('button,input,select,textarea,a,label')) return;
       isDown = true;
       dragged = false;
       offsetX = el.offsetLeft - e.clientX;
@@ -1680,8 +1714,8 @@
         return;
       }
       dragged = true;
-      el.style.left = (e.clientX + offsetX) + 'px';
-      el.style.top = (e.clientY + offsetY) + 'px';
+      el.style.left = Math.max(12, Math.min(window.innerWidth - el.offsetWidth - 12, e.clientX + offsetX)) + 'px';
+      el.style.top = Math.max(12, Math.min(window.innerHeight - el.offsetHeight - 12, e.clientY + offsetY)) + 'px';
       e.preventDefault();
     });
 
@@ -1701,7 +1735,10 @@
       position: "absolute", right: "0", bottom: "0", cursor: "se-resize", borderTopLeftRadius: "4px" });
     el.appendChild(resizeHandle);
     resizeHandle.addEventListener("mousedown", e => { e.preventDefault(); document.addEventListener("mousemove", resizePanel); document.addEventListener("mouseup", stopResize); });
-    function resizePanel(e) { el.style.width = (e.clientX - el.offsetLeft) + "px"; el.style.height = (e.clientY - el.offsetTop) + "px"; }
+    function resizePanel(e) {
+      el.style.width = Math.max(280, Math.min(window.innerWidth - el.offsetLeft - 12, e.clientX - el.offsetLeft)) + 'px';
+      el.style.height = Math.max(220, Math.min(window.innerHeight - el.offsetTop - 12, e.clientY - el.offsetTop)) + 'px';
+    }
     function stopResize() { document.removeEventListener("mousemove", resizePanel); document.removeEventListener("mouseup", stopResize); }
   }
 

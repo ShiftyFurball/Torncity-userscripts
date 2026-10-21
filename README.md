@@ -6,6 +6,8 @@ Small collection repo for Torn userscripts.
 
 This branch contains a simpler payment checklist. It has not been released to existing Greasy Fork users.
 
+Beta 3 puts the tracker in the browser top layer and opens Settings/API entry as native modal dialogs above it. The tracker header stays outside the scrolling content, dragging/resizing stays within the viewport, and header buttons no longer start a drag. API entry, settings and permission errors explain that cash payment logs need a Full Access key (or a suitably permissioned custom key). The local preview includes a simulated maximum-z-index sticky search bar to verify these layers.
+
 Beta 2 fixes the history scan and dark text inherited from Torn's table styles. Receipt types are discovered from Torn's `logtypes` catalog, then scanned separately so unrelated activity cannot exhaust the payment scan budget. Short final pages end the scan successfully. Pagination tests cover this regression, and the browser preview mocks the real fetch path with combined cash/Xanax receipts and conflicting page CSS.
 
 - Eight weekly status cells per employee, with actual receipt dates/amounts on click.
