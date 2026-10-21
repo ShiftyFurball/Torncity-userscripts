@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      8.0.0-beta.1
+// @version      8.0.0-beta.2
 // @description  Simple eight-week staff payment checklist. Cash and items count together; older unpaid weeks remain recorded.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -1139,7 +1139,8 @@
 
         const employeeNameIndex = buildEmployeeNameIndex(employees);
         const logStartUnix = determineLogStartUnix();
-        const logResult = await fetchAllLogs('', logStartUnix, SETTINGS.maxLogPages);
+        const logTypes = await getReceiptLogTypes();
+        const logResult = await fetchReceiptLogs(logTypes, logStartUnix, SETTINGS.maxLogPages);
         const logs = logResult.logs;
 
         generateRecentWeekKeys(SETTINGS.maxWeeks).forEach(key => {
@@ -1314,6 +1315,7 @@
     for (let page = 0; page < pageLimit; page += 1) {
       const params = {
         selections: "log",
+        limit: 100,
         from: fromUnix,
         to: toUnix
       };
@@ -1340,6 +1342,10 @@
         }
       });
 
+      // A short page exhausts this filtered stream. Do not request the final
+      // timestamp again and mistake its repeated receipt for stalled history.
+      if (ids.length < 100) break;
+
       if (oldest === null || oldest === previousOldest) {
         hitPageLimit = true;
         break;
@@ -1358,6 +1364,39 @@
     }
 
     return { logs: combined, hitPageLimit };
+  }
+
+  function receiptLogTypesFromCatalog(catalog) {
+    const types = [];
+    for (const [key, value] of Object.entries(catalog || {})) {
+      const id = Number(value && typeof value === 'object' ? (value.id ?? key) : key);
+      const title = String(value && typeof value === 'object' ? (value.title || value.name || '') : value);
+      if (Number.isInteger(id) && /\b(money|cash|item|items|company)\b/i.test(title) &&
+          /\b(receive|received|deposit|deposited)\b/i.test(title) &&
+          !/\b(send|sent|withdraw|withdrawn|buy|sell)\b/i.test(title)) types.push(String(id));
+    }
+    return [...new Set(types)];
+  }
+
+  async function getReceiptLogTypes() {
+    const response = await tornFetch('torn/', {selections:'logtypes'});
+    const types = receiptLogTypesFromCatalog(response.logtypes);
+    if (!types.length) throw new Error('Could not identify incoming cash/item log types. Check API access to torn/logtypes.');
+    return types;
+  }
+
+  async function fetchReceiptLogs(types, fromUnix, maxPages) {
+    const logs = {};
+    let hitPageLimit = false;
+    for (let index = 0; index < types.length; index++) {
+      setStatus(`Checking payment history (${index + 1}/${types.length} receipt types)…`, 'info');
+      // Query each type separately: activity such as attacks and crimes cannot
+      // consume the payment history budget or hide older receipts.
+      const result = await fetchAllLogs(types[index], fromUnix, maxPages);
+      Object.assign(logs, result.logs);
+      hitPageLimit = hitPageLimit || result.hitPageLimit;
+    }
+    return {logs, hitPageLimit};
   }
 
   function determineLogStartUnix() {
@@ -1726,10 +1765,14 @@
     for (let day = start.getTime(); day <= end.getTime(); day += MILLIS_PER_WEEK) all.push(getIsoWeekKey(new Date(day)));
     const cash = Number(SETTINGS.defaultMoneyTax) || 10000000;
     const items = Number(SETTINGS.defaultItemTax) || 7;
-    overviewView.innerHTML = `<p>Each week: $${cash.toLocaleString()} or ${items} ${escapeHtml(SETTINGS.taxItemName)} — cash and items can be combined.</p>
+    overviewView.innerHTML = `<style>
+      #tax-panel #simple-grid, #tax-panel #simple-grid th, #tax-panel #simple-grid td,
+      #tax-panel #simple-details, #tax-panel #simple-details p, #tax-panel #simple-details h3 {color:#eee !important;background:#1b1b1b !important;}
+      #tax-panel #simple-grid th {color:#bfcbd8 !important;font-weight:600;}
+      #tax-panel #simple-grid button {font:inherit !important;}
+    </style><p>Each week: $${cash.toLocaleString()} or ${items} ${escapeHtml(SETTINGS.taxItemName)} — cash and items can be combined.</p>
       <p>Sunday–Saturday, UTC. Payments cover oldest unpaid weeks first. Older debt stays recorded from ${escapeHtml(formatWeekHeader(formatWeekKey(SETTINGS.startYear, SETTINGS.startWeek)).fullStartLabel)}. Click a week to see payments received.</p>
       <label><input type="checkbox" id="simple-unpaid"> Show staff with outstanding payments only</label>
-      ${scanComplete ? '' : '<p role="alert">History is incomplete or unavailable. Outstanding balances cannot be confirmed. Increase the history scan limit in Settings and refresh.</p>'}
       <div style="overflow:auto;margin-top:12px"><table id="simple-grid" style="width:100%;border-collapse:collapse;white-space:nowrap"><thead></thead><tbody></tbody></table></div><div id="simple-details" style="margin-top:16px"></div>`;
     const table = overviewView.querySelector('table');
     const header = table.querySelector('thead').insertRow();
@@ -1744,7 +1787,7 @@
       const ledger = calculatePaymentLedger(weeks, history, cash, items, scanComplete);
       const row = table.querySelector('tbody').insertRow();
       row.dataset.owing = String(!scanComplete || ledger.owedWeeks > 1e-9);
-      const cell = text => { const td = row.insertCell(); td.textContent = text; td.style.cssText = 'padding:10px;border-bottom:1px solid #444'; return td; };
+      const cell = text => { const td = row.insertCell(); td.textContent = text; td.style.cssText = 'padding:10px;border-bottom:1px solid #444;color:#eee'; return td; };
       cell(getEmployeeName(employees[id]) || id);
       for (const key of visible) {
         const week = ledger.weeks.find(w => w.key === key);

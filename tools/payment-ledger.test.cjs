@@ -51,7 +51,8 @@ let fail=false, partial=false;
 function setStatus(){} function normalizeEmployeeMap(m){return m;} function getDefaultRequirement(){return {type:'money',amount:10000000};}
 async function ensureItemCatalog(){return {};} function getItemIdForName(){return 206;} function normalizeItemName(s){return s.toLowerCase();}
 function buildEmployeeNameIndex(){return {};} function determineLogStartUnix(){return 1;} function formatWeekKey(){return '2026-W40';}
-async function fetchAllLogs(){if(fail)throw Error('offline');return {logs:{a:{timestamp:1,data:{amount:10000000}},b:{timestamp:2,data:{amount:10000000}}},hitPageLimit:partial};}
+async function getReceiptLogTypes(){return ['1','2'];}
+async function fetchReceiptLogs(){if(fail)throw Error('offline');return {logs:{a:{timestamp:1,data:{amount:10000000}},b:{timestamp:2,data:{amount:10000000}}},hitPageLimit:partial};}
 function generateRecentWeekKeys(){return ['2026-W40'];} function unixLogDate(){return new Date();} function getIsoWeekKey(){return '2026-W40';}
 function isWeekOnOrAfter(){return true;} function findEmployeeIdFromLog(){return '1';} function getItemQuantityFromLog(){return 0;}
 function getMoneyAmountFromLog(l){return l.data.amount;} function isLikelyIncomingMoneyLog(){return true;} function isPaymentExcluded(id,p){return p==='money:b';}

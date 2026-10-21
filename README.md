@@ -6,6 +6,8 @@ Small collection repo for Torn userscripts.
 
 This branch contains a simpler payment checklist. It has not been released to existing Greasy Fork users.
 
+Beta 2 fixes the history scan and dark text inherited from Torn's table styles. Receipt types are discovered from Torn's `logtypes` catalog, then scanned separately so unrelated activity cannot exhaust the payment scan budget. Short final pages end the scan successfully. Pagination tests cover this regression, and the browser preview mocks the real fetch path with combined cash/Xanax receipts and conflicting page CSS.
+
 - Eight weekly status cells per employee, with actual receipt dates/amounts on click.
 - Cash and the configured item (Xanax by default) count together. For a $10m / 7 Xanax rate, $5m plus 4 Xanax covers one week with a small credit.
 - Payments cover oldest unpaid weeks first; the eight-column display does not erase older debt. Tracking starts at the saved start year/week and each employee's join week when available.
@@ -19,13 +21,14 @@ Before trying it, export the installed script/settings using your userscript man
 
 This is intentionally a new calculation policy: saved per-member rates, requirement-reset dates, excluded weeks and carrybacks are preserved in storage but do not affect the simplified calculation. Saved individual payment exclusions still apply. If you depend on those advanced adjustments, retain the old version until a migration is agreed. Changing the default rates recalculates the tracked period; historical rates are not yet recorded separately.
 
-History is fetched back to the saved tracking start on refresh, subject to the page limit. All older debt can only be confirmed when that scan completes. Only recognized incoming receipt/deposit logs are counted; unrecognized log formats require an anonymized example to support them. Live Torn API behavior still needs trial verification.
+Payment history is fetched back to the saved tracking start on refresh, subject to the page limit per incoming receipt type. All older debt can only be confirmed when those scans complete. Only recognized incoming receipt/deposit logs are counted; unrecognized log formats require an anonymized example to support them. The API key needs access to `torn/logtypes` as well as employees, items and the relevant user logs. Live Torn API behavior still needs trial verification.
 
 For local verification:
 
 ```bash
 node --check torn-tax-tracker.user.js
 node tools/payment-ledger.test.cjs
+node tools/log-pagination.test.cjs
 node tools/preview.cjs
 ```
 
