@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      8.0.0-beta.15
-// @description  Cached staff payment tracking for an adjustable period, with cash/item payments checked against previous arrears before future credit.
+// @version      8.0.0
+// @description  Track staff tax paid in cash or items, with adjustable periods, cached receipts, friendly reminders and reversible write-offs.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
 // @grant        none
 // @license      MIT
-// @downloadURL https://raw.githubusercontent.com/ShiftyFurball/Torncity-userscripts/codex/simple-eight-week-tracker/torn-tax-tracker.user.js
-// @updateURL https://raw.githubusercontent.com/ShiftyFurball/Torncity-userscripts/codex/simple-eight-week-tracker/torn-tax-tracker.user.js
+// @downloadURL https://update.greasyfork.org/scripts/552053/Torn%20Lingerie%20Store%20Tax%20Tracker.user.js
+// @updateURL https://update.greasyfork.org/scripts/552053/Torn%20Lingerie%20Store%20Tax%20Tracker.meta.js
 // @noframes
 // ==/UserScript==
 

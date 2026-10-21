@@ -1,10 +1,10 @@
 # Torncity Userscripts
 
-Torn staff payment tracker, beta 8.0.0-beta.15.
+Torn staff payment tracker, version 8.0.0.
 
 See [API usage and privacy](docs/API-USAGE.md) for the disclosure shown at both key-entry fields, required access, local storage/sharing details, request pacing, rate-limit handling and invalid-key removal. The document also provides ready-to-paste Greasy Fork disclosure text.
 
-[Install the beta](https://raw.githubusercontent.com/ShiftyFurball/Torncity-userscripts/codex/simple-eight-week-tracker/torn-tax-tracker.user.js)
+[Install the tracker](https://greasyfork.org/en/scripts/552053-torn-lingerie-store-tax-tracker)
 
 ## Payment periods
 
@@ -32,7 +32,7 @@ The key remains in the existing local settings and is sent only to Torn's API. C
 
 ## Trying the beta
 
-Back up your existing userscript/settings before trying it. It uses the original name, namespace and active profile storage. Keep only one version enabled. Previous saved settings remain, but legacy per-member requirements, requirement resets, week exclusions and carrybacks do not affect this simplified calculation. Individual payment exclusions still apply. The original Greasy Fork release has not been updated; beta update URLs point to this branch.
+Back up your existing userscript/settings before trying it. It uses the original name, namespace and active profile storage. Keep only one version enabled. Previous saved settings remain, but legacy per-member requirements, requirement resets, week exclusions and carrybacks do not affect this simplified calculation. Individual payment exclusions still apply. Releases sync from main to Greasy Fork; installed release updates come from Greasy Fork.
 
 The settings backup exports the active settings without its API key. It does not export the receipt cache.
 
