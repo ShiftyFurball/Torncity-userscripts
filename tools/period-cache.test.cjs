@@ -58,7 +58,8 @@ assert.equal(ctx.calculatePeriodLedger(period,[],cash,item,true,null,[]).owedWee
 const reminder=ctx.buildPaymentReminder('123','Alice',5,cash,item,'Xanax',period);
 assert.equal(reminder.recipient,'123');
 assert(reminder.body.includes('$37,500,000'));
-assert(reminder.body.includes('35 Xanax'));
+assert(!reminder.body.includes('Xanax'));
+assert(!reminder.body.includes('including the current week'));
 assert(reminder.body.includes('2026-09-13'));
 assert(reminder.body.includes('Hi Alice'));
 

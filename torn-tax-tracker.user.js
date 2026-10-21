@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      8.0.0-beta.11
+// @version      8.0.0-beta.12
 // @description  Cached staff payment tracking for an adjustable period, with cash/item payments checked against previous arrears before future credit.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -2016,11 +2016,13 @@
         btn.style.cssText = `color:${week && week.status === 'Paid' ? '#91e5ae' : label === 'Unpaid' ? '#ffb3b3' : '#e5dfad'};background:#292929;border:1px solid #555;border-radius:5px;padding:7px;cursor:pointer`;
         btn.addEventListener('click', () => showSimplePayments(id, key, employees)); td.append(btn);
       }
-      const balanceCell = cell(!scanComplete ? 'Unable to confirm' : ledger.creditWeeks > 1e-9 ? `${ledger.creditWeeks.toFixed(2)} weeks credit` : ledger.owedWeeks <= 1e-9 ? 'Paid up' : `$${Math.round(ledger.owedWeeks * cash).toLocaleString()} or ${(ledger.owedWeeks * items).toFixed(2)} ${SETTINGS.taxItemName}${visible.includes(current) ? ' (includes this week)' : ''}`);
-      const adjust = document.createElement('button'); adjust.textContent = 'Write off / adjustments';
-      adjust.style.cssText = 'display:block;margin-top:6px;background:#303a46;color:#eee;border:1px solid #647181;border-radius:5px;padding:5px 8px;cursor:pointer';
+      cell(!scanComplete ? 'Unable to confirm' : ledger.creditWeeks > 1e-9 ? `${ledger.creditWeeks.toFixed(2)} weeks credit` : ledger.owedWeeks <= 1e-9 ? 'Paid up' : `$${Math.round(ledger.owedWeeks * cash).toLocaleString()} or ${(ledger.owedWeeks * items).toFixed(2)} ${SETTINGS.taxItemName}${visible.includes(current) ? ' (includes this week)' : ''}`);
+      const adjust = document.createElement('button'); adjust.textContent = '⋯';
+      adjust.title = `Write off tax / adjustments for ${employeeName}`;
+      adjust.setAttribute('aria-label', adjust.title);
+      adjust.style.cssText = 'display:inline-block !important;margin:0 0 0 8px !important;background:transparent !important;color:#aebdcb !important;border:0 !important;border-radius:4px;padding:2px 6px !important;cursor:pointer;font-size:18px !important;line-height:1 !important;vertical-align:middle';
       adjust.addEventListener('click', () => showWriteOffEditor(id, employeeName, ledger, period, cash));
-      balanceCell.append(adjust);
+      nameCell.append(adjust);
       const last = history.filter(p => !p.excluded && p.timestamp >= period.startUnix * 1000 && p.timestamp <= period.endUnix * 1000).sort((a, b) => b.timestamp - a.timestamp)[0];
       cell(last ? new Date(last.timestamp).toISOString().slice(0, 16).replace('T', ' ') : scanComplete ? 'None' : 'Unknown');
     }
@@ -2126,7 +2128,7 @@
     const start = new Date(period.startUnix * 1000).toISOString().slice(0,10);
     const end = new Date(period.endUnix * 1000).toISOString().slice(0,10);
     return {recipient:String(id), name, createdAt:Date.now(), title:'Friendly company tax reminder',
-      body:`Hi ${name},\n\nHope you're doing well! Just a friendly reminder that the tracker currently shows $${cash.toLocaleString()} outstanding for ${start} to ${end} (including the current week if shown). That's approximately ${items} ${itemName}, or a mix of cash and items at our agreed weekly rate.\n\nWhen you get a chance, could you please catch up? If you've already paid or something looks wrong, let me know and I'll check it.\n\nThanks!`};
+      body:`Hi ${name},\n\nHope you're doing well! Just a friendly reminder that the tracker currently shows $${cash.toLocaleString()} outstanding for ${start} to ${end}\n\nWhen you get a chance, could you please catch up? If you've already paid or something looks wrong, let me know and I'll check it.\n\nThanks!`};
   }
 
   function installPaymentReminderDraft() {
