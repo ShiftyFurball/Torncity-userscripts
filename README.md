@@ -1,6 +1,8 @@
 # Torncity Userscripts
 
-Torn staff payment tracker, version 8.0.0.
+Torn staff payment tracker, version 8.0.1.
+
+Cached staff/payment results open immediately. Reopening within two minutes uses no automatic API calls; after that the previous view appears while the tracker checks for updates. Manual Refresh always checks now.
 
 See [API usage and privacy](docs/API-USAGE.md) for the disclosure shown at both key-entry fields, required access, local storage/sharing details, request pacing, rate-limit handling and invalid-key removal. The document also provides ready-to-paste Greasy Fork disclosure text.
 
@@ -44,6 +46,7 @@ node tools/payment-ledger.test.cjs
 node tools/log-pagination.test.cjs
 node tools/period-cache.test.cjs
 node tools/api-usage.test.cjs
+node tools/fast-view.test.cjs
 node tools/preview.cjs
 ```
 

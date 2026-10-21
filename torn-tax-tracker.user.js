@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      8.0.0
+// @version      8.0.1
 // @description  Track staff tax paid in cash or items, with adjustable periods, cached receipts, friendly reminders and reversible write-offs.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -1196,6 +1196,19 @@
     let paymentHistory = {};
     let logScanHitPageLimit = false;
     try {
+      if (!forceRefresh && !SETTINGS.testMode) {
+        const cached = await loadPaymentView();
+        if (cached) {
+          lastEmployeesCache = cached.employees;
+          lastWeeklyDataCache = cached.weeklyData;
+          lastPaymentHistoryCache = cached.paymentHistory;
+          scanComplete = cached.fresh;
+          renderOverview(lastWeeklyDataCache, lastEmployeesCache);
+          const checked = new Date(cached.checkedAt).toLocaleString();
+          setStatus(`Cached results · last checked ${checked}${cached.fresh ? '. Use Refresh to check now.' : ' · checking for new payments…'}`, 'info');
+          if (cached.fresh) return;
+        }
+      }
       if (SETTINGS.testMode) {
         const fake = makeFakeData();
         employees = fake.employees;
@@ -1353,6 +1366,7 @@
       });
       lastPaymentHistoryCache = paymentHistory;
       saveSettings(SETTINGS);
+      if (scanComplete && !SETTINGS.testMode) await savePaymentView(employees, weeklyData, paymentHistory);
 
       renderOverview(weeklyData, employees);
       if (SETTINGS.enableEmployeeMenu) {
@@ -1580,10 +1594,40 @@
   }
 
   async function getReceiptLogTypes() {
+    try {
+      const cached = JSON.parse(localStorage.getItem('torn_tax_logtypes_v1') || 'null');
+      if (cached && Date.now() - cached.checkedAt >= 0 && Date.now() - cached.checkedAt < ITEM_CATALOG_MAX_AGE && Array.isArray(cached.types) && cached.types.length && cached.types.every(type => /^\d+$/.test(type))) return cached.types;
+    } catch { /* Fetch a fresh catalog when cached metadata is unavailable. */ }
     const response = await tornFetch('torn/', {selections:'logtypes'});
     const types = receiptLogTypesFromCatalog(response.logtypes);
     if (!types.length) throw new Error('Could not identify incoming cash/item log types. Check API access to torn/logtypes.');
+    try {localStorage.setItem('torn_tax_logtypes_v1',JSON.stringify({checkedAt:Date.now(),types}));} catch { /* Metadata caching is optional. */ }
     return types;
+  }
+
+  function paymentViewSignature() {
+    const period = getTrackingPeriod();
+    return JSON.stringify({version:1,start:period.startUnix,weeks:period.weeks,requested:period.requestedWeeks,cash:SETTINGS.defaultMoneyTax,items:SETTINGS.defaultItemTax,item:normalizeItemName(SETTINGS.taxItemName),manual:SETTINGS.manualMode,members:SETTINGS.manualMode ? SETTINGS.manualMembers : null,excluded:SETTINGS.excludedPayments || {}});
+  }
+
+  async function loadPaymentView() {
+    try {
+      const snapshot = JSON.parse(localStorage.getItem((await paymentCacheKey()) + '_view') || 'null');
+      if (!snapshot || snapshot.signature !== paymentViewSignature() || !snapshot.complete || !Number.isFinite(snapshot.checkedAt) || !snapshot.employees || !snapshot.weeklyData || !snapshot.paymentHistory) return null;
+      const age = Date.now() - snapshot.checkedAt;
+      if (age < 0) return null;
+      // Preserve days-in-company estimates when a snapshot crosses midnight.
+      const day = timestamp => Math.floor(timestamp / MILLIS_PER_DAY);
+      const addedDays = day(Date.now()) - day(snapshot.checkedAt);
+      for (const employee of Object.values(snapshot.employees)) if (employee && employee.joinDate == null && Number.isFinite(employee.joinDays)) employee.joinDays += addedDays;
+      return {...snapshot, fresh:age < 120000};
+    } catch { return null; }
+  }
+
+  async function savePaymentView(employees, weeklyData, paymentHistory) {
+    try {
+      localStorage.setItem((await paymentCacheKey()) + '_view', JSON.stringify({signature:paymentViewSignature(),complete:true,checkedAt:Date.now(),employees,weeklyData,paymentHistory}));
+    } catch { /* Show live results even if browser storage is full. */ }
   }
 
   async function fetchReceiptLogs(types, fromUnix, maxPages) {

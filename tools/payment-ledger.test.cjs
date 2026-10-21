@@ -64,6 +64,7 @@ async function ensureItemCatalog(){return {};} function getItemIdForName(){retur
 function buildEmployeeNameIndex(){return {};} function determineLogStartUnix(){return 1;} function formatWeekKey(){return '2026-W40';}
 function getYtdPeriod(){return {fromUnix:1};}
 function getTrackingPeriod(){return {startUnix:1,endUnix:9999999999,requestedWeeks:6};}
+async function loadPaymentView(){return null;} async function savePaymentView(){}
 async function getReceiptLogTypes(){return ['1','2'];}
 async function fetchReceiptLogs(){if(fail)throw Error('offline');return {logs:{a:{timestamp:1,data:{amount:10000000}},b:{timestamp:2,data:{amount:10000000}}},hitPageLimit:partial};}
 function generateRecentWeekKeys(){return ['2026-W40'];} function unixLogDate(){return new Date();} function getIsoWeekKey(){return '2026-W40';}

@@ -6,7 +6,7 @@ Track staff company tax paid in cash, Xanax or another configured item.
 - Shows the latest six weeks by default, with an adjustable start date and 1–52 weeks displayed.
 - Cash and items combine using your configured weekly rates.
 - Click a week for actual receipt dates and amounts.
-- Local receipt caching reduces repeat downloads; refresh checks for new receipts.
+- Opens immediately from the last completed results. Reopening within two minutes makes no automatic API requests; older cached results appear while new receipts are checked. **Refresh** checks immediately.
 - Click an employee's name to prepare a friendly payment reminder.
 - Small **⋯** controls beside names provide write-offs and free-week adjustments, with Undo.
 
