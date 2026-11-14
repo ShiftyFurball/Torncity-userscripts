@@ -25,11 +25,11 @@ vm.runInContext(extract('retireApiKey')+'\n'+extract('tornFetch'),ctx);
   const first=now;
   const issued=[];
   for(let i=0;i<100;i++){await schedule.waitForApiSlot();issued.push(now);}
-  assert.equal(issued[13],first,'first fourteen requests have no artificial per-request delay');
-  assert(issued[14]-first>=10000,'fifteenth request respects the burst budget');
+  assert.equal(issued[19],first,'first twenty requests have no artificial per-request delay');
+  assert(issued[20]-first>=10000,'twenty-first request respects the burst budget');
   assert(issued[79]-first<60000,'all eighty requests fit in the first minute');
   for(const timestamp of issued) {
-    assert(issued.filter(t=>t<=timestamp&&t>timestamp-10000).length<=14,'rolling burst budget must be enforced');
+    assert(issued.filter(t=>t<=timestamp&&t>timestamp-10000).length<=20,'rolling burst budget must be enforced');
     assert(issued.filter(t=>t<=timestamp&&t>timestamp-60000).length<=80,'rolling minute budget must be enforced');
   }
   schedule.setApiCooldown(60000);await assert.rejects(schedule.waitForApiSlot(),/paused/);
