@@ -1,6 +1,6 @@
 # Torncity Userscripts
 
-Torn staff payment tracker, version 8.0.1.
+Torn staff payment tracker, version 8.0.2.
 
 Cached staff/payment results open immediately. Reopening within two minutes uses no automatic API calls; after that the previous view appears while the tracker checks for updates. Manual Refresh always checks now.
 

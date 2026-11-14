@@ -23,12 +23,15 @@ vm.runInContext(extract('retireApiKey')+'\n'+extract('tornFetch'),ctx);
   const schedule=vm.createContext({Date:class extends Date{static now(){return now;}},navigator:{},localStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v)},delay:async ms=>{now+=ms;}});
   vm.runInContext('let apiRequestQueue=Promise.resolve(),recentApiRequests=[],apiCooldownUntil=0;'+['readApiSchedule','setApiCooldown','waitForApiSlot'].map(extract).join('\n'),schedule);
   const first=now;
-  for(let i=0;i<10;i++)await schedule.waitForApiSlot();
-  assert.equal(now,first,'first ten requests have no artificial per-request delay');
-  await schedule.waitForApiSlot();assert(now-first>=10000,'eleventh request respects the burst budget');
   const issued=[];
-  for(let i=0;i<80;i++){await schedule.waitForApiSlot();issued.push(now);}
-  for(const timestamp of issued) assert(issued.filter(t=>t<=timestamp&&t>timestamp-60000).length<=60,'rolling minute budget must be enforced');
+  for(let i=0;i<100;i++){await schedule.waitForApiSlot();issued.push(now);}
+  assert.equal(issued[13],first,'first fourteen requests have no artificial per-request delay');
+  assert(issued[14]-first>=10000,'fifteenth request respects the burst budget');
+  assert(issued[79]-first<60000,'all eighty requests fit in the first minute');
+  for(const timestamp of issued) {
+    assert(issued.filter(t=>t<=timestamp&&t>timestamp-10000).length<=14,'rolling burst budget must be enforced');
+    assert(issued.filter(t=>t<=timestamp&&t>timestamp-60000).length<=80,'rolling minute budget must be enforced');
+  }
   schedule.setApiCooldown(60000);await assert.rejects(schedule.waitForApiSlot(),/paused/);
   now+=60000;await schedule.waitForApiSlot();
   const disclosure=vm.runInNewContext(extract('apiUsageDisclosure')+'\napiUsageDisclosure()');
