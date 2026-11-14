@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      8.0.2
+// @version      8.0.3
 // @description  Track staff tax paid in cash or items, with adjustable periods, cached receipts, friendly reminders and reversible write-offs.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -1508,8 +1508,8 @@
         const local = recentApiRequests.filter(valid);
         const recent = local.length > shared.length ? local : shared;
         const burst = recent.filter(timestamp => timestamp > now - 10000);
-        const minuteLimit = 80;
-        const burstLimit = 14;
+        const minuteLimit = 60;
+        const burstLimit = 10;
         const minuteWait = recent.length >= minuteLimit ? recent[recent.length - minuteLimit] + 60001 - now : 0;
         const burstWait = burst.length >= burstLimit ? burst[burst.length - burstLimit] + 10001 - now : 0;
         const wait = Math.max(minuteWait, burstWait);
