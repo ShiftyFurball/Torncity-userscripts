@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      8.0.5
+// @version      8.0.6
 // @description  Track staff tax paid in cash or items, with adjustable periods, cached receipts, friendly reminders and reversible write-offs.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -1190,6 +1190,11 @@
     if (fetching) return;
     fetching = true;
     scanComplete = false;
+    const scanStartedAt = Date.now();
+    const showScanProgress = message => {
+      const elapsed = Math.floor((Date.now() - scanStartedAt) / 1000);
+      setStatus(`${message} · ${elapsed}s elapsed`, 'info');
+    };
     setStatus("Fetching payment history…", "info");
     let employees = {};
     let weeklyData = {};
@@ -1219,7 +1224,8 @@
           employees = normalizeEmployeeMap(SETTINGS.manualMembers);
           SETTINGS.manualMembers = employees;
         } else {
-          const data = await tornFetch('company/', {selections:'employees'});
+          showScanProgress('Checking employees…');
+          const data = await tornFetch('company/', {selections:'employees'}, showScanProgress);
           if (data && data.error) {
             throw new Error(`Torn API error (${data.error.code}): ${data.error.error}`);
           }
@@ -1262,7 +1268,7 @@
         const logStartUnix = determineLogStartUnix();
         const logTypes = await getReceiptLogTypes();
         const period = getTrackingPeriod();
-        let logResult = await fetchReceiptLogs(logTypes, logStartUnix, SETTINGS.maxLogPages);
+        let logResult = await fetchReceiptLogs(logTypes, logStartUnix, SETTINGS.maxLogPages, showScanProgress);
         let neededWeeks = period.requestedWeeks;
         for (const log of Object.values(logResult.logs)) {
           const timestamp = Number(log.timestamp);
@@ -1274,7 +1280,8 @@
         }
         if (neededWeeks > 520) throw new Error('A payment implies over 520 weeks at the configured rate. Check the payment rates before calculating.');
         if (neededWeeks > period.requestedWeeks) {
-          logResult = await fetchReceiptLogs(logTypes, period.startUnix - neededWeeks * MILLIS_PER_WEEK / 1000, SETTINGS.maxLogPages);
+          logResult = await fetchReceiptLogs(logTypes, period.startUnix - neededWeeks * MILLIS_PER_WEEK / 1000, SETTINGS.maxLogPages,
+            message => showScanProgress(`Extended history · ${message}`));
         }
         const logs = logResult.logs;
 
@@ -1393,7 +1400,7 @@
     } finally { fetching = false; }
   }
 
-  async function tornFetch(endpoint, params) {
+  async function tornFetch(endpoint, params, onProgress) {
     if (!SETTINGS.apiKey) {
       throw new Error("No Torn API key saved. Open Settings and add an API key.");
     }
@@ -1409,7 +1416,8 @@
     let lastError = null;
     for (let attempt = 1; attempt <= 4; attempt += 1) {
       try {
-        await waitForApiSlot();
+        await waitForApiSlot(onProgress);
+        onProgress?.(attempt > 1 ? `Waiting for Torn (attempt ${attempt}/4)…` : 'Waiting for Torn…');
         if (!SETTINGS.apiKey || SETTINGS.apiKey !== requestKey) throw new Error('API key changed or was disabled. Open Settings before refreshing.');
         const res = await fetch(`https://api.torn.com/${endpoint}?${query.toString()}`);
         if (res.status === 429) {
@@ -1497,7 +1505,7 @@
     try { localStorage.setItem('torn_tax_api_schedule_v1', JSON.stringify({...saved, cooldownUntil:Math.max(Number(saved.cooldownUntil) || 0, apiCooldownUntil)})); } catch { /* Keep the local cooldown. */ }
   }
 
-  function waitForApiSlot() {
+  function waitForApiSlot(onProgress) {
     const reserve = async () => {
       while (true) {
         const now = Date.now(), saved = readApiSchedule();
@@ -1513,7 +1521,16 @@
         const minuteWait = recent.length >= minuteLimit ? recent[recent.length - minuteLimit] + 60001 - now : 0;
         const burstWait = burst.length >= burstLimit ? burst[burst.length - burstLimit] + 10001 - now : 0;
         const wait = Math.max(minuteWait, burstWait);
-        if (wait > 0) { await delay(wait); continue; }
+        if (wait > 0) {
+          const readyAt = now + wait;
+          let remaining = wait;
+          do {
+            onProgress?.(`Waiting ${Math.ceil(remaining / 1000)}s for the tracker's API limit…`);
+            await delay(onProgress ? Math.min(remaining, 1000) : remaining);
+            remaining = readyAt - Date.now();
+          } while (remaining > 0);
+          continue;
+        }
         recentApiRequests = recent.concat(now);
         try { localStorage.setItem('torn_tax_api_schedule_v1', JSON.stringify({requests:recentApiRequests,cooldownUntil:cooldown})); } catch { /* Keep a local request budget if storage is unavailable. */ }
         return;
@@ -1524,7 +1541,7 @@
     return task;
   }
 
-  async function fetchAllLogs(logTypes, fromUnix, maxPages) {
+  async function fetchAllLogs(logTypes, fromUnix, maxPages, onProgress) {
     const combined = {};
     let toUnix = Math.floor(Date.now() / 1000);
     let previousOldest = null;
@@ -1542,7 +1559,9 @@
         params.log = String(logTypes).trim();
       }
 
-      const response = await tornFetch("user/", params);
+      const reportPage = onProgress && (message => onProgress(`Page ${page + 1} · ${message}`));
+      reportPage?.('Requesting logs…');
+      const response = await tornFetch("user/", params, reportPage);
       if (!response.log || typeof response.log !== 'object') {
         throw new Error('Torn returned no log collection. Check API log access.');
       }
@@ -1634,7 +1653,7 @@
     } catch { /* Show live results even if browser storage is full. */ }
   }
 
-  async function fetchReceiptLogs(types, fromUnix, maxPages) {
+  async function fetchReceiptLogs(types, fromUnix, maxPages, onProgress = setStatus) {
     const logs = {};
     let hitPageLimit = false;
     const cacheKey = await paymentCacheKey();
@@ -1642,13 +1661,13 @@
     try { cache = JSON.parse(localStorage.getItem(cacheKey) || '{}'); } catch { cache = {}; }
     if (!cache || cache.version !== 1 || !cache.streams || typeof cache.streams !== 'object') cache = {version:1, streams:{}};
     for (let index = 0; index < types.length; index++) {
-      setStatus(`Checking payment history (${index + 1}/${types.length} receipt types)…`, 'info');
       const type = types[index];
       const previous = cache.streams[type];
       const reusable = previous && previous.complete && Number.isFinite(previous.from) && previous.from <= fromUnix && Number.isFinite(previous.through) && previous.logs && typeof previous.logs === 'object';
       const through = Math.floor(Date.now() / 1000);
       const scanFrom = reusable ? Math.max(fromUnix, previous.through - 300) : fromUnix;
-      const result = await fetchAllLogs(type, scanFrom, maxPages);
+      const result = await fetchAllLogs(type, scanFrom, maxPages,
+        message => onProgress(`Receipt type ${index + 1}/${types.length} · ${message}`));
       const combined = Object.assign({}, previous && previous.logs, result.logs);
       for (const [id, log] of Object.entries(combined)) {
         if (Number(log.timestamp) >= fromUnix && Number(log.timestamp) <= through) logs[id] = log;
@@ -2095,6 +2114,7 @@
 
   function renderOverview(weeklyData, employees) {
     if (!overviewView) return;
+    const previousScroll = overviewView.querySelector('#simple-grid-scroll')?.scrollLeft ?? 0;
     const period = getTrackingPeriod();
     const current = period.currentWeek;
     const visible = period.weeks;
@@ -2105,10 +2125,19 @@
       #tax-panel #simple-details, #tax-panel #simple-details p, #tax-panel #simple-details h3 {color:#eee !important;background:#1b1b1b !important;}
       #tax-panel #simple-grid th {color:#bfcbd8 !important;font-weight:600;}
       #tax-panel #simple-grid button {font:inherit !important;}
+      #tax-panel #simple-grid tr > :first-child {
+        position:sticky;
+        left:0;
+        z-index:1;
+        max-width:min(12rem, 38vw);
+        white-space:normal;
+        overflow-wrap:anywhere;
+        box-shadow:1px 0 #555;
+      }
     </style><p>Each week: $${cash.toLocaleString()} or ${items} ${escapeHtml(SETTINGS.taxItemName)} — cash and items can be combined.</p>
       <p>Showing ${escapeHtml(formatWeekHeader(visible[0]).fullStartLabel)} onward · ${visible.length} weeks (UTC). Ordinary payments count in the week received. Bulk payments check the previous ${period.requestedWeeks} weeks first, extending further if needed. Balances below cover only the displayed period.</p>
       <label><input type="checkbox" id="simple-unpaid"> Show staff with outstanding payments only</label>
-      <div style="overflow:auto;margin-top:12px"><table id="simple-grid" style="width:100%;border-collapse:collapse;white-space:nowrap"><thead></thead><tbody></tbody></table></div><div id="simple-details" style="margin-top:16px"></div>`;
+      <div id="simple-grid-scroll" role="region" aria-label="Weekly staff tax payments" tabindex="0" style="overflow:auto;margin-top:12px"><table id="simple-grid" style="width:100%;border-collapse:collapse;white-space:nowrap"><thead></thead><tbody></tbody></table></div><div id="simple-details" style="margin-top:16px"></div>`;
     const table = overviewView.querySelector('table');
     const header = table.querySelector('thead').insertRow();
     for (const label of ['Employee', ...visible.map(k => formatWeekHeader(k).startLabel), 'Period outstanding / credit', 'Last payment in period (UTC)']) {
@@ -2164,6 +2193,7 @@
     overviewView.querySelector('#simple-unpaid').addEventListener('change', event => {
       for (const row of table.querySelectorAll('tbody tr')) row.hidden = event.target.checked && row.dataset.owing === 'false';
     });
+    overviewView.querySelector('#simple-grid-scroll').scrollLeft = previousScroll;
   }
 
   function showSimplePayments(id, key, employees) {

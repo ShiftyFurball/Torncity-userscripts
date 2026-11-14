@@ -1,6 +1,8 @@
 # Torncity Userscripts
 
-Torn staff payment tracker, version 8.0.5.
+Torn staff payment tracker, version 8.0.6.
+
+During refresh, the status shows the receipt type, page, elapsed time and any request-limit countdown. Employee names stay visible when scrolling across weeks.
 
 Cached staff/payment results open immediately. Reopening within two minutes uses no automatic API calls; after that the previous view appears while the tracker checks for updates. Manual Refresh always checks now.
 
