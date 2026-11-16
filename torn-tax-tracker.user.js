@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Lingerie Store Tax Tracker
 // @namespace    http://tampermonkey.net/
-// @version      8.0.6
+// @version      8.0.7
 // @description  Track staff tax paid in cash or items, with adjustable periods, cached receipts, friendly reminders and reversible write-offs.
 // @author       Hooded_Prince
 // @match        https://www.torn.com/*
@@ -1191,9 +1191,11 @@
     fetching = true;
     scanComplete = false;
     const scanStartedAt = Date.now();
+    let showingCachedBalances = false;
     const showScanProgress = message => {
       const elapsed = Math.floor((Date.now() - scanStartedAt) / 1000);
-      setStatus(`${message} · ${elapsed}s elapsed`, 'info');
+      const prefix = showingCachedBalances ? 'Showing last completed balances · ' : '';
+      setStatus(`${prefix}${message} · ${elapsed}s elapsed`, 'info');
     };
     setStatus("Fetching payment history…", "info");
     let employees = {};
@@ -1201,17 +1203,18 @@
     let paymentHistory = {};
     let logScanHitPageLimit = false;
     try {
-      if (!forceRefresh && !SETTINGS.testMode) {
+      if (!SETTINGS.testMode) {
         const cached = await loadPaymentView();
         if (cached) {
           lastEmployeesCache = cached.employees;
           lastWeeklyDataCache = cached.weeklyData;
           lastPaymentHistoryCache = cached.paymentHistory;
-          scanComplete = cached.fresh;
-          renderOverview(lastWeeklyDataCache, lastEmployeesCache);
+          scanComplete = cached.fresh && !forceRefresh;
+          showingCachedBalances = !scanComplete;
+          renderOverview(lastWeeklyDataCache, lastEmployeesCache, true);
           const checked = new Date(cached.checkedAt).toLocaleString();
-          setStatus(`Cached results · last checked ${checked}${cached.fresh ? '. Use Refresh to check now.' : ' · checking for new payments…'}`, 'info');
-          if (cached.fresh) return;
+          setStatus(`Cached results · last checked ${checked}${scanComplete ? '. Use Refresh to check now.' : ' · checking for new payments…'}`, 'info');
+          if (scanComplete) return;
         }
       }
       if (SETTINGS.testMode) {
@@ -1280,8 +1283,12 @@
         }
         if (neededWeeks > 520) throw new Error('A payment implies over 520 weeks at the configured rate. Check the payment rates before calculating.');
         if (neededWeeks > period.requestedWeeks) {
-          logResult = await fetchReceiptLogs(logTypes, period.startUnix - neededWeeks * MILLIS_PER_WEEK / 1000, SETTINGS.maxLogPages,
-            message => showScanProgress(`Extended history · ${message}`));
+          const older = await fetchReceiptLogs(logTypes, period.startUnix - neededWeeks * MILLIS_PER_WEEK / 1000, SETTINGS.maxLogPages,
+            message => showScanProgress(`Extended history · ${message}`), logStartUnix);
+          logResult = {
+            logs: {...older.logs, ...logResult.logs},
+            hitPageLimit: logResult.hitPageLimit || older.hitPageLimit
+          };
         }
         const logs = logResult.logs;
 
@@ -1541,9 +1548,9 @@
     return task;
   }
 
-  async function fetchAllLogs(logTypes, fromUnix, maxPages, onProgress) {
+  async function fetchAllLogs(logTypes, fromUnix, maxPages, onProgress, through = Math.floor(Date.now() / 1000)) {
     const combined = {};
-    let toUnix = Math.floor(Date.now() / 1000);
+    let toUnix = through;
     let previousOldest = null;
     let hitPageLimit = false;
     const pageLimit = Math.min(100, Math.max(1, Number(maxPages) || DEFAULT_SETTINGS.maxLogPages));
@@ -1653,7 +1660,7 @@
     } catch { /* Show live results even if browser storage is full. */ }
   }
 
-  async function fetchReceiptLogs(types, fromUnix, maxPages, onProgress = setStatus) {
+  async function fetchReceiptLogs(types, fromUnix, maxPages, onProgress = setStatus, historyBoundary) {
     const logs = {};
     let hitPageLimit = false;
     const cacheKey = await paymentCacheKey();
@@ -1663,20 +1670,29 @@
     for (let index = 0; index < types.length; index++) {
       const type = types[index];
       const previous = cache.streams[type];
-      const reusable = previous && previous.complete && Number.isFinite(previous.from) && previous.from <= fromUnix && Number.isFinite(previous.through) && previous.logs && typeof previous.logs === 'object';
-      const through = Math.floor(Date.now() / 1000);
-      const scanFrom = reusable ? Math.max(fromUnix, previous.through - 300) : fromUnix;
-      const result = await fetchAllLogs(type, scanFrom, maxPages,
-        message => onProgress(`Receipt type ${index + 1}/${types.length} · ${message}`));
+      const hasCoverage = previous && previous.complete && Number.isFinite(previous.from) && Number.isFinite(previous.through) && previous.logs && typeof previous.logs === 'object';
+      const reusable = hasCoverage && previous.from <= fromUnix;
+      const extending = historyBoundary !== undefined;
+      const through = historyBoundary ?? Math.floor(Date.now() / 1000);
+      const joinsCoverage = extending && hasCoverage && previous.from <= through && previous.through >= through;
+      const scanFrom = !extending && reusable ? Math.max(fromUnix, previous.through - 300) : fromUnix;
+      // Overlap the join second and merge by receipt ID.
+      const scanThrough = joinsCoverage ? previous.from : through;
+      const result = joinsCoverage && reusable
+        ? {logs:{},hitPageLimit:false}
+        : await fetchAllLogs(type, scanFrom, maxPages,
+          message => onProgress(`Receipt type ${index + 1}/${types.length} · ${message}`), scanThrough);
       const combined = Object.assign({}, previous && previous.logs, result.logs);
       for (const [id, log] of Object.entries(combined)) {
         if (Number(log.timestamp) >= fromUnix && Number(log.timestamp) <= through) logs[id] = log;
       }
       hitPageLimit = hitPageLimit || result.hitPageLimit;
+      // An older slice can extend the checkpoint only when it joins complete history.
+      if (extending && (!joinsCoverage || result.hitPageLimit)) continue;
       // A partial request never advances the complete-coverage checkpoint.
       cache.streams[type] = result.hitPageLimit && reusable
         ? {...previous, logs:combined}
-        : {from: reusable ? previous.from : fromUnix, through, complete:!result.hitPageLimit, logs:combined};
+        : {from: reusable ? previous.from : fromUnix, through:extending ? previous.through : through, complete:!result.hitPageLimit, logs:combined};
       try { localStorage.setItem(cacheKey, JSON.stringify(cache)); }
       catch (error) { console.warn('Payment cache could not be saved; using live results.', error); }
     }
@@ -2112,7 +2128,7 @@
     return {weeks:visible, owedWeeks:visible.reduce((sum, week) => sum + Math.max(0, 1 - week.coverage), 0), creditWeeks:bulk, lookbackWeeks};
   }
 
-  function renderOverview(weeklyData, employees) {
+  function renderOverview(weeklyData, employees, displayComplete = scanComplete) {
     if (!overviewView) return;
     const previousScroll = overviewView.querySelector('#simple-grid-scroll')?.scrollLeft ?? 0;
     const period = getTrackingPeriod();
@@ -2148,9 +2164,9 @@
       const joinKey = joined ? formatWeekKey(...joined) : null;
       const history = lastPaymentHistoryCache[id] || [];
       const adjustments = getMemberWriteOffs(id);
-      const ledger = calculatePeriodLedger(period, history, cash, items, scanComplete, joinKey, adjustments);
+      const ledger = calculatePeriodLedger(period, history, cash, items, displayComplete, joinKey, adjustments);
       const row = table.querySelector('tbody').insertRow();
-      row.dataset.owing = String(!scanComplete || ledger.owedWeeks > 1e-9);
+      row.dataset.owing = String(!displayComplete || ledger.owedWeeks > 1e-9);
       const cell = text => { const td = row.insertCell(); td.textContent = text; td.style.cssText = 'padding:10px;border-bottom:1px solid #444;color:#eee'; return td; };
       const nameCell = cell('');
       const nameLink = document.createElement('a');
@@ -2174,13 +2190,13 @@
       for (const key of visible) {
         const week = ledger.weeks.find(w => w.key === key);
         let label = week ? week.status : '—';
-        if (key === current && scanComplete && week && week.status !== 'Paid') label = week.coverage > 0 ? 'Part paid · due' : 'Due this week';
+        if (key === current && displayComplete && week && week.status !== 'Paid') label = week.coverage > 0 ? 'Part paid · due' : 'Due this week';
         if (week && week.status === 'Paid' && week.writeOffCoverage > 0) label = week.writeOffCoverage >= 1 - 1e-9 ? 'Written off' : 'Paid · adjusted';
         const td = cell(''); const btn = document.createElement('button'); btn.textContent = label;
         btn.style.cssText = `color:${week && week.status === 'Paid' ? '#91e5ae' : label === 'Unpaid' ? '#ffb3b3' : '#e5dfad'};background:#292929;border:1px solid #555;border-radius:5px;padding:7px;cursor:pointer`;
         btn.addEventListener('click', () => showSimplePayments(id, key, employees)); td.append(btn);
       }
-      cell(!scanComplete ? 'Unable to confirm' : ledger.creditWeeks > 1e-9 ? `${ledger.creditWeeks.toFixed(2)} weeks credit` : ledger.owedWeeks <= 1e-9 ? 'Paid up' : `$${Math.round(ledger.owedWeeks * cash).toLocaleString()} or ${(ledger.owedWeeks * items).toFixed(2)} ${SETTINGS.taxItemName}${visible.includes(current) ? ' (includes this week)' : ''}`);
+      cell(!displayComplete ? 'Unable to confirm' : ledger.creditWeeks > 1e-9 ? `${ledger.creditWeeks.toFixed(2)} weeks credit` : ledger.owedWeeks <= 1e-9 ? 'Paid up' : `$${Math.round(ledger.owedWeeks * cash).toLocaleString()} or ${(ledger.owedWeeks * items).toFixed(2)} ${SETTINGS.taxItemName}${visible.includes(current) ? ' (includes this week)' : ''}`);
       const adjust = document.createElement('button'); adjust.textContent = '⋯';
       adjust.title = `Write off tax / adjustments for ${employeeName}`;
       adjust.setAttribute('aria-label', adjust.title);
@@ -2188,7 +2204,7 @@
       adjust.addEventListener('click', () => showWriteOffEditor(id, employeeName, ledger, period, cash));
       nameCell.append(adjust);
       const last = history.filter(p => !p.excluded && p.timestamp >= period.startUnix * 1000 && p.timestamp <= period.endUnix * 1000).sort((a, b) => b.timestamp - a.timestamp)[0];
-      cell(last ? new Date(last.timestamp).toISOString().slice(0, 16).replace('T', ' ') : scanComplete ? 'None' : 'Unknown');
+      cell(last ? new Date(last.timestamp).toISOString().slice(0, 16).replace('T', ' ') : displayComplete ? 'None' : 'Unknown');
     }
     overviewView.querySelector('#simple-unpaid').addEventListener('change', event => {
       for (const row of table.querySelectorAll('tbody tr')) row.hidden = event.target.checked && row.dataset.owing === 'false';

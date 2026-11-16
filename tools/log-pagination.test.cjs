@@ -37,6 +37,29 @@ function page(oldest) { return Object.fromEntries(Array.from({length:100},(_,i) 
   assert.equal(Object.keys(result.logs).length,2);
   assert.equal(result.hitPageLimit,false);
   assert.deepEqual(calls.slice(-2).map(c=>c.log),['1','2']);
+
+  const storage = new Map();
+  ctx.localStorage = {getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value)};
+  responses = [{log:{recent:{timestamp:350},boundary:{timestamp:300}}}];
+  const recent = await ctx.fetchReceiptLogs(['1'],300,1);
+  responses = [{log:{older:{timestamp:200},boundary:{timestamp:300}}}];
+  const older = await ctx.fetchReceiptLogs(['1'],200,1,ctx.setStatus,300);
+  assert.equal(calls.at(-1).from,200);
+  assert.equal(calls.at(-1).to,300,'extended history stops at the earlier scan boundary');
+  assert.deepEqual(Object.keys({...older.logs,...recent.logs}).sort(),['boundary','older','recent']);
+  const callCount = calls.length;
+  result = await ctx.fetchReceiptLogs(['1'],200,1,ctx.setStatus,300);
+  assert.equal(calls.length,callCount,'a complete cached extension needs no API calls');
+  assert.equal(result.hitPageLimit,false);
+
+  storage.clear();
+  responses = [{log:page(350)},{log:{older:{timestamp:200}}},{log:{recent:{timestamp:350}}}];
+  result = await ctx.fetchReceiptLogs(['1'],300,1);
+  assert.equal(result.hitPageLimit,true);
+  await ctx.fetchReceiptLogs(['1'],200,1,ctx.setStatus,300);
+  assert.equal(calls.at(-1).to,300,'an incomplete first scan still bounds the extension');
+  await ctx.fetchReceiptLogs(['1'],300,1);
+  assert.equal(calls.at(-1).from,300,'the older slice cannot mark incomplete recent history as complete');
   responses = [{}];
   await assert.rejects(ctx.fetchAllLogs('',100,5), /no log collection/);
   console.log('Timestamp overlap, deduplication, partial history and malformed responses passed.');
